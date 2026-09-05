@@ -9,10 +9,14 @@ import sys
 import shutil
 import logging
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
+
+def _get_silent_creationflags() -> int:
+    return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # Known potential Java installation directories on Windows
 POTENTIAL_JAVA_DIRS = [
@@ -96,7 +100,8 @@ def check_java_status(custom_path: Optional[str] = None) -> Dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=5
+            timeout=5,
+            creationflags=_get_silent_creationflags()
         )
         version_output = (proc.stderr or proc.stdout).strip().splitlines()
         first_line = version_output[0] if version_output else "Java detected"
@@ -144,7 +149,8 @@ def check_tesseract_status(custom_path: Optional[str] = None) -> Dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=5
+            timeout=5,
+            creationflags=_get_silent_creationflags()
         )
         first_line = proc.stdout.strip().splitlines()[0] if proc.stdout else "Tesseract OCR"
         return {
@@ -165,6 +171,37 @@ def check_tesseract_status(custom_path: Optional[str] = None) -> Dict[str, Any]:
 # Auto-configure Java upon module load
 configure_java_environment()
 
+_tika_lock = threading.Lock()
+_tika_server_initialized = False
+
+
+def _patch_tika_silent_process() -> None:
+    """
+    Patch tika.tika.Popen so that Tika's internal startServer calls
+    run with CREATE_NO_WINDOW and SW_HIDE, preventing any cmd.exe windows
+    from flashing on the screen.
+    """
+    try:
+        import tika.tika
+        orig_popen = tika.tika.Popen
+        if getattr(orig_popen, "_is_silent_patched", False):
+            return
+
+        def _silent_popen(*args, **kwargs):
+            if sys.platform == "win32":
+                flags = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+                kwargs["creationflags"] = flags
+                startupinfo = kwargs.get("startupinfo") or subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # SW_HIDE
+                kwargs["startupinfo"] = startupinfo
+            return orig_popen(*args, **kwargs)
+
+        _silent_popen._is_silent_patched = True
+        tika.tika.Popen = _silent_popen
+    except Exception as e:
+        logger.debug(f"Unable to patch tika.tika.Popen: {e}")
+
 
 class TikaExtractor:
     """Extracts text content from various document formats using Apache Tika."""
@@ -175,19 +212,27 @@ class TikaExtractor:
         self._tika_imported = False
 
     def _ensure_tika(self) -> bool:
-        """Lazy import of tika to allow environment setup first."""
-        if not self._tika_imported:
-            try:
-                # Ensure java path is in PATH before importing tika
-                configure_java_environment()
-                import tika
-                # Tell Tika not to print jar download/status banners to stdout
-                tika.initVM()
-                self._tika_imported = True
-            except Exception as e:
-                logger.error(f"Failed to initialize Tika VM: {e}")
-                return False
-        return True
+        """Lazy import and thread-safe silent initialization of Tika."""
+        global _tika_server_initialized
+        if self._tika_imported and _tika_server_initialized:
+            return True
+
+        with _tika_lock:
+            if not self._tika_imported or not _tika_server_initialized:
+                try:
+                    # Ensure java path is in PATH before importing tika
+                    configure_java_environment()
+                    # Patch Tika subprocess to suppress all console windows
+                    _patch_tika_silent_process()
+                    import tika
+                    # Tell Tika not to print jar download/status banners to stdout
+                    tika.initVM()
+                    self._tika_imported = True
+                    _tika_server_initialized = True
+                except Exception as e:
+                    logger.error(f"Failed to initialize Tika VM: {e}")
+                    return False
+            return True
 
     def extract_text(self, filepath: str) -> Tuple[str, Optional[str]]:
         """

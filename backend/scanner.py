@@ -250,6 +250,13 @@ class Scanner:
         total_files = len(all_files)
         self._log_info(f"Discovered {total_files} eligible files to scan.")
 
+        # Ensure Tika is initialized once silently before spawning parallel tasks
+        if total_files > 0:
+            try:
+                self.extractor._ensure_tika()
+            except Exception as e:
+                self._log_warning(f"Tika pre-warm notice: {e}")
+
         # 2. Iterate through files concurrently
         if total_files > 0:
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
