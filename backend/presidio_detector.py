@@ -92,6 +92,15 @@ class PresidioDetector:
                 else:
                     self._analyzer = AnalyzerEngine()
 
+                # Register custom India PII and Developer Secret recognizers
+                try:
+                    from backend.custom_recognizers import get_custom_recognizers
+                    for rec in get_custom_recognizers():
+                        self._analyzer.registry.add_recognizer(rec)
+                    logger.info("Custom India PII & Secret recognizers registered.")
+                except Exception as custom_err:
+                    logger.warning(f"Failed to load custom recognizers: {custom_err}")
+
                 raw_entities = self._analyzer.get_supported_entities(language=self.language)
                 self._supported_entities = sorted(list(raw_entities))
                 logger.info(f"Presidio initialized. Supported entities ({len(self._supported_entities)}): {self._supported_entities}")

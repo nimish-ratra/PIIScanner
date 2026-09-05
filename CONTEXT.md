@@ -38,6 +38,7 @@
 c:\PIISentinalApp\
 ├── backend/
 │   ├── config.py             # User preferences & settings (%APPDATA%\PIISentinel\config.json)
+│   ├── custom_recognizers.py # Native Presidio recognizers for India PII (Verhoeff) & Secrets/Keys
 │   ├── database.py           # SQLite persistence for scan runs (%APPDATA%\PIISentinel\history.db)
 │   ├── file_ops.py           # Path-preserving file copy/move extraction and pyzipper encrypted zip
 │   ├── logger.py             # Rotating file logger to %APPDATA%\PIISentinel\logs\sentinel.log
@@ -102,10 +103,13 @@ c:\PIISentinalApp\
 - **Fast-Path Fallback:** Directly reads `.txt`, `.json`, `.xml`, `.csv` if Tika is unavailable or slow.
 - **Size Safeguards:** Enforces `max_file_size_mb` (default 50 MB) before extraction.
 
-### 4.2. PII Detection & Redaction (`backend/presidio_detector.py`)
-- **Dedicated Reference Guide:** See [`PRESIDIO_PII_CATALOG.md`](file:///c:/PIISentinalApp/PRESIDIO_PII_CATALOG.md) for the complete 23-entity specification, regex patterns, checksums, and context word catalogs.
+### 4.2. PII Detection & Redaction (`backend/presidio_detector.py` & `backend/custom_recognizers.py`)
+- **Dedicated Reference Guide:** See [`PRESIDIO_PII_CATALOG.md`](file:///c:/PIISentinalApp/PRESIDIO_PII_CATALOG.md) for the complete 36-entity specification, regex patterns, checksums, and context word catalogs.
 - **Singleton Pattern:** `PresidioDetector.get_instance()` prevents reloading heavy spaCy language models into memory multiple times.
-- **Dynamic Entity Discovery:** Queries `analyzer.get_supported_entities()` at runtime (`EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `PERSON`, `IP_ADDRESS`, `US_SSN`, `IBAN_CODE`, `CRYPTO`, `DATE_TIME`, `LOCATION`, `URL`, etc. - 23 total entities).
+- **Dynamic Entity Discovery (36 Entities):**
+  - **Global PII:** `CREDIT_CARD`, `EMAIL_ADDRESS`, `PHONE_NUMBER`, `PERSON`, `LOCATION`, `ORGANIZATION`, `IP_ADDRESS`, `US_SSN`, `IBAN_CODE`, `CRYPTO`, `DATE_TIME`, `URL`, etc.
+  - **India-Specific PII:** `IN_AADHAAR` (with Verhoeff checksum algorithm), `IN_PAN`, `IN_GSTIN`, `IN_IFSC`, `IN_PASSPORT`, `IN_VOTER_ID`.
+  - **Developer Secrets & Credentials:** `AWS_ACCESS_KEY`, `GITHUB_TOKEN`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `SLACK_TOKEN`, `PRIVATE_KEY`, `JWT_TOKEN`.
 - **Large Document Chunking:** Splits documents > 150,000 characters with 500-character overlap to avoid spaCy memory limits.
 - **Redacted Previews:** `redact_value(val)` masks sensitive middle characters while retaining first and last characters for context (e.g. `alice@domain.com` -> `al********om`).
 

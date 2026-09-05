@@ -207,6 +207,37 @@ class TestBackend(unittest.TestCase):
         self.assertTrue(Path(summary["report_html"]).exists())
         print(f"[OK] Multi-worker (4 workers) scanner test passed. Scanned: {summary['files_scanned']}, Findings: {summary['total_findings']}")
 
+    def test_09_india_pii_and_secrets(self):
+        detector = PresidioDetector.get_instance()
+        text = (
+            "Taxpayer PAN: ABCPK1234F. "
+            "Valid Aadhaar: 3675 9832 4152. "
+            "Corrupted Aadhaar: 3675 9832 4159. "
+            "GSTIN: 27ABCDE1234F1Z5. "
+            "IFSC: HDFC0001234. "
+            "AWS Key: AKIAIOSFODNN7EXAMPLE. "
+            "GitHub Token: ghp_1234567890abcdefghijklmnopqrstuvwxyz. "
+            "OpenAI: sk-proj-1234567890abcdefghijklmnopqrstuvwxyz1234567890. "
+            "-----BEGIN RSA PRIVATE KEY-----"
+        )
+        findings = detector.analyze_text(text, score_threshold=0.5)
+        found_types = {f["entity"] for f in findings}
+
+        self.assertIn("IN_PAN", found_types)
+        self.assertIn("IN_AADHAAR", found_types)
+        self.assertIn("IN_GSTIN", found_types)
+        self.assertIn("IN_IFSC", found_types)
+        self.assertIn("AWS_ACCESS_KEY", found_types)
+        self.assertIn("GITHUB_TOKEN", found_types)
+        self.assertIn("OPENAI_API_KEY", found_types)
+        self.assertIn("PRIVATE_KEY", found_types)
+
+        # Confirm invalid Aadhaar was rejected by Verhoeff check
+        aadhaar_vals = [f["value"] for f in findings if f["entity"] == "IN_AADHAAR"]
+        self.assertIn("3675 9832 4152", aadhaar_vals)
+        self.assertNotIn("3675 9832 4159", aadhaar_vals)
+        print(f"[OK] India PII and Developer Secrets tests passed. Verified {len(found_types)} entities.")
+
 
 if __name__ == "__main__":
     unittest.main()

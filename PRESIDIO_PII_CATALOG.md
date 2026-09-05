@@ -14,8 +14,8 @@
 
 ### Key Operational Guarantees
 - **Zero Cloud Communication:** No external APIs, SaaS endpoints, or cloud telemetry are invoked. All NER models and regex recognizers run directly in the local Python process.
-- **Hybrid Detection:** Combines statistical machine learning (spaCy NER), deterministic pattern matching (regular expressions), mathematical checksum validations (Luhn algorithm, ISO 7064 Mod-97), and contextual word proximity boosts.
-- **Dynamic Entity Discovery:** Supports **23 distinct PII entity types** out of the box, dynamically queried at runtime via `analyzer.get_supported_entities()`.
+- **Hybrid Detection:** Combines statistical machine learning (spaCy NER), deterministic pattern matching (regular expressions), mathematical checksum validations (Verhoeff for Aadhaar, Luhn algorithm, ISO 7064 Mod-97), and contextual word proximity boosts.
+- **Dynamic Entity Discovery:** Supports **36 distinct PII and Secret entity types** out of the box, dynamically queried at runtime via `analyzer.get_supported_entities()`.
 - **Large-Document Chunking:** Seamlessly inspects massive text streams (exceeding spaCy's 1,000,000 character limit) by sliding 150,000-character windows with a 500-character overlap to prevent entity splitting at boundaries.
 
 ---
@@ -44,7 +44,7 @@
                     ┌───────────────────────────────┐
                     │ Context Word Proximity Engine │
                     │ (Boosts score when keywords   │
-                    │  like 'card', 'ssn' are near) │
+                    │  like 'card', 'pan' are near) │
                     └───────────────┬───────────────┘
                                     │
                                     ▼
@@ -63,6 +63,7 @@
 ### 2.1. The 4 Layers of PII Verification
 1. **Regex Pattern Matching:** High-speed initial candidate identification using optimized regular expressions.
 2. **Mathematical Checksum Validation:** Algorithmic validation to eliminate false positives:
+   - **Verhoeff Algorithm:** Mathematically validates 12-digit Indian Aadhaar numbers (`IN_AADHAAR`), discarding candidates that fail the check digit.
    - **Luhn Algorithm (MOD-10):** Validates credit card number sequences.
    - **ISO 7064 Mod-97-10:** Verifies International Bank Account Numbers (IBAN).
    - **Modulo-11:** Verifies UK National Health Service (NHS) numbers.
@@ -74,33 +75,46 @@
 
 ## 3. Comprehensive Catalog of Detected PII Entities
 
-Microsoft Presidio in PII Sentinel detects **23 distinct PII entity types**, categorized across 6 primary domains:
+Microsoft Presidio in PII Sentinel detects **36 distinct PII and Secret entity types**, categorized across 8 primary domains:
 
 | # | Entity Type | Domain | Primary Mechanism | Context Proximity Boost Keywords |
 | :-: | :--- | :--- | :--- | :--- |
-| 1 | `CREDIT_CARD` | Financial | Regex + Luhn MOD-10 Checksum | `credit`, `card`, `visa`, `mastercard`, `cc`, `amex`, `discover`, `jcb`, `diners` |
-| 2 | `US_BANK_NUMBER` | Financial | Regex + Banking Context | `check`, `account`, `account#`, `acct`, `bank`, `save`, `debit` |
-| 3 | `IBAN_CODE` | Financial | Regex + ISO 7064 Mod-97 Checksum | `iban`, `bank`, `transaction`, `wire`, `swift` |
-| 4 | `CRYPTO` | Financial | Regex + Base58/Bech32 Validation | `wallet`, `btc`, `bitcoin`, `crypto`, `eth`, `address` |
-| 5 | `US_SSN` | Government / Legal | Regex + Area/Group Code Rules | `social`, `security`, `ssn`, `ssns`, `ssid` |
-| 6 | `US_PASSPORT` | Government / Legal | Alphanumeric Regex + Context | `us`, `united`, `states`, `passport`, `passport#`, `travel`, `document` |
-| 7 | `US_DRIVER_LICENSE` | Government / Legal | Multi-State Regexes + Context | `driver`, `license`, `permit`, `lic`, `identification`, `dls`, `cdls`, `lic#` |
-| 8 | `US_ITIN` | Government / Legal | 9-Digit Tax Regex + Range Rules | `individual`, `taxpayer`, `itin`, `tax`, `payer`, `taxid`, `tin` |
-| 9 | `UK_NHS` | Government / Healthcare | 10-Digit Regex + Modulo-11 | `national health service`, `nhs`, `health services authority` |
-| 10 | `PERSON` | Identity | spaCy NER (`en_core_web_sm`) | Natural language sentence structure, honorifics (Mr., Dr.) |
-| 11 | `LOCATION` | Demographic | spaCy NER (`GPE` / `LOC`) | Geographic entities, cities, states, countries, street addresses |
-| 12 | `ORGANIZATION` | Corporate / Legal | spaCy NER (`ORG`) | Company names, agencies, educational institutions, non-profits |
-| 13 | `NRP` | Identity / Demographic | spaCy NER (`NORP`) | Nationalities, religious groups, political affiliations |
-| 14 | `AGE` | Demographic | spaCy NER + Pattern Rules | Contextual age phrases ("35 years old", "age 42") |
-| 15 | `ID` | Identification | spaCy NER (`CARDINAL`/`ID`) | Alphanumeric tracking numbers, employee identifiers |
-| 16 | `EMAIL_ADDRESS` | Contact | RFC 5322 Standard Regex | `email`, `e-mail`, `mailto`, `contact` |
-| 17 | `EMAIL` | Contact | spaCy Linguistic Classifier | Secondary fallback for email identifiers in free text |
-| 18 | `PHONE_NUMBER` | Contact | `phonenumbers` (libphonenumber) | `phone`, `number`, `telephone`, `cell`, `cellphone`, `mobile`, `call`, `fax` |
-| 19 | `URL` | Network / Web | Strict URI/URL RFC 3986 Regex | `url`, `website`, `link`, `http`, `https` |
-| 20 | `IP_ADDRESS` | Network / Technical | IPv4 (0-255 octets) & IPv6 Regex | `ip`, `ipv4`, `ipv6`, `host`, `address` |
-| 21 | `MAC_ADDRESS` | Network / Technical | EUI-48 / EUI-64 Hexadecimal Regex | `mac`, `mac address`, `hardware address`, `physical address`, `ethernet` |
-| 22 | `MEDICAL_LICENSE` | Healthcare | DEA & State Medical Board Regex | `medical`, `certificate`, `DEA`, `physician`, `doctor`, `license` |
-| 23 | `DATE_TIME` | Temporal / Audit | 13 Date Patterns + spaCy `DATE` | `date`, `birthday`, `dob`, `born`, `issued`, `expires` |
+| 1 | `IN_AADHAAR` | India PII | Regex + **Verhoeff Algorithm Checksum** | `aadhaar`, `aadhar`, `uidai`, `uid`, `resident id`, `identity number` |
+| 2 | `IN_PAN` | India PII | 10-Char Entity-Code Regex + General | `pan`, `pan card`, `income tax`, `permanent account number`, `nsdl` |
+| 3 | `IN_GSTIN` | India PII | 15-Char GSTIN Regex + State Codes | `gst`, `gstin`, `goods and services tax`, `tax invoice`, `gst number` |
+| 4 | `IN_IFSC` | India PII | 11-Char Bank/Branch Code Regex | `ifsc`, `ifsc code`, `rtgs`, `neft`, `imps`, `bank branch`, `branch code` |
+| 5 | `IN_PASSPORT` | India PII | Letter + 7 Digits Regex | `passport`, `passport no`, `republic of india`, `indian passport` |
+| 6 | `IN_VOTER_ID` | India PII | 3 Letters + 7 Digits Regex | `voter`, `epic`, `voter id`, `election commission`, `electoral`, `eci` |
+| 7 | `AWS_ACCESS_KEY` | Secrets / Cloud | AKIA/ASIA 20-Char Regex | `aws`, `amazon`, `access_key`, `secret_key`, `s3`, `iam`, `credential` |
+| 8 | `GITHUB_TOKEN` | Secrets / Developer | ghp_ Classic & Fine-Grained Regex | `github`, `token`, `pat`, `personal access token`, `repo`, `bearer` |
+| 9 | `OPENAI_API_KEY` | Secrets / AI | sk- & sk-proj- Key Regex | `openai`, `api_key`, `chatgpt`, `gpt-4`, `sk-`, `bearer` |
+| 10 | `GOOGLE_API_KEY` | Secrets / Cloud | AIza 39-Char Key Regex | `google`, `gcp`, `api_key`, `firebase`, `cloud`, `maps` |
+| 11 | `SLACK_TOKEN` | Secrets / Messaging | xoxb/xoxp/xoxa Tokens & Webhooks | `slack`, `bot_token`, `webhook`, `chat:write`, `channel` |
+| 12 | `PRIVATE_KEY` | Secrets / Cryptography | PEM Private Key Headers | `key`, `pem`, `ssh`, `ssl`, `private`, `certificate`, `id_rsa` |
+| 13 | `JWT_TOKEN` | Secrets / Auth | Base64url 3-Segment Bearer Regex | `jwt`, `token`, `bearer`, `authorization`, `auth`, `access_token` |
+| 14 | `CREDIT_CARD` | Financial | Regex + Luhn MOD-10 Checksum | `credit`, `card`, `visa`, `mastercard`, `cc`, `amex`, `discover`, `jcb` |
+| 15 | `US_BANK_NUMBER` | Financial | Regex + Banking Context | `check`, `account`, `account#`, `acct`, `bank`, `save`, `debit` |
+| 16 | `IBAN_CODE` | Financial | Regex + ISO 7064 Mod-97 Checksum | `iban`, `bank`, `transaction`, `wire`, `swift` |
+| 17 | `CRYPTO` | Financial | Regex + Base58/Bech32 Validation | `wallet`, `btc`, `bitcoin`, `crypto`, `eth`, `address` |
+| 18 | `US_SSN` | Government / US | Regex + Area/Group Code Rules | `social`, `security`, `ssn`, `ssns`, `ssid` |
+| 19 | `US_PASSPORT` | Government / US | Alphanumeric Regex + Context | `us`, `united`, `states`, `passport`, `passport#`, `travel` |
+| 20 | `US_DRIVER_LICENSE` | Government / US | Multi-State Regexes + Context | `driver`, `license`, `permit`, `lic`, `identification`, `dls`, `cdls` |
+| 21 | `US_ITIN` | Government / US | 9-Digit Tax Regex + Range Rules | `individual`, `taxpayer`, `itin`, `tax`, `payer`, `taxid`, `tin` |
+| 22 | `UK_NHS` | Government / UK | 10-Digit Regex + Modulo-11 | `national health service`, `nhs`, `health services authority` |
+| 23 | `PERSON` | Identity | spaCy NER (`en_core_web_sm`) | Natural language sentence structure, honorifics (Mr., Dr.) |
+| 24 | `LOCATION` | Demographic | spaCy NER (`GPE` / `LOC`) | Geographic entities, cities, states, countries, street addresses |
+| 25 | `ORGANIZATION` | Corporate / Legal | spaCy NER (`ORG`) | Company names, agencies, educational institutions, non-profits |
+| 26 | `NRP` | Identity / Demographic | spaCy NER (`NORP`) | Nationalities, religious groups, political affiliations |
+| 27 | `AGE` | Demographic | spaCy NER + Pattern Rules | Contextual age phrases ("35 years old", "age 42") |
+| 28 | `ID` | Identification | spaCy NER (`CARDINAL`/`ID`) | Alphanumeric tracking numbers, employee identifiers |
+| 29 | `EMAIL_ADDRESS` | Contact | RFC 5322 Standard Regex | `email`, `e-mail`, `mailto`, `contact` |
+| 30 | `EMAIL` | Contact | spaCy Linguistic Classifier | Secondary fallback for email identifiers in free text |
+| 31 | `PHONE_NUMBER` | Contact | `phonenumbers` (libphonenumber) | `phone`, `number`, `telephone`, `cell`, `cellphone`, `mobile` |
+| 32 | `URL` | Network / Web | Strict URI/URL RFC 3986 Regex | `url`, `website`, `link`, `http`, `https` |
+| 33 | `IP_ADDRESS` | Network / Technical | IPv4 (0-255 octets) & IPv6 Regex | `ip`, `ipv4`, `ipv6`, `host`, `address` |
+| 34 | `MAC_ADDRESS` | Network / Technical | EUI-48 / EUI-64 Hexadecimal Regex | `mac`, `mac address`, `hardware address`, `physical address` |
+| 35 | `MEDICAL_LICENSE` | Healthcare | DEA & State Medical Board Regex | `medical`, `certificate`, `DEA`, `physician`, `doctor`, `license` |
+| 36 | `DATE_TIME` | Temporal / Audit | 13 Date Patterns + spaCy `DATE` | `date`, `birthday`, `dob`, `born`, `issued`, `expires` |
 
 ---
 
@@ -188,6 +202,84 @@ Microsoft Presidio in PII Sentinel detects **23 distinct PII entity types**, cat
 
 #### `MAC_ADDRESS`
 - **Specification:** Six pairs of hexadecimal digits separated by hyphens (`00-14-22-01-23-45`) or colons (`00:14:22:01:23:45`).
+
+---
+
+### 4.5. India-Specific PII Identifiers
+
+#### `IN_AADHAAR`
+- **Specification:** 12-digit Unique Identification Authority of India (UIDAI) identity number.
+- **Format:** Formatted as `XXXX XXXX XXXX` or `XXXX-XXXX-XXXX`, or 12 consecutive digits.
+- **Verification Engine:** **Verhoeff Mathematical Checksum**.
+  - Any 12-digit number sequence detected by the regex is automatically tested against the Verhoeff dihedral group D5 multiplication table.
+  - Candidates failing the checksum are **immediately rejected** (score 0.0).
+  - Valid candidates receive `0.85` base score, boosted to `1.00` when adjacent to context words like `"aadhaar"`, `"uidai"`, or `"resident id"`.
+
+#### `IN_PAN`
+- **Specification:** Indian Income Tax Department Permanent Account Number.
+- **Format:** 10 alphanumeric characters (`[A-Z]{5}[0-9]{4}[A-Z]{1}`).
+- **Structure:**
+  - 4th character designates taxpayer category: `P` (Person/Individual), `C` (Company), `H` (HUF), `F` (Firm), `A` (Association of Persons), `T` (Trust), `B` (Body of Individuals), `L` (Local Authority), `J` (Artificial Juridical Person), `G` (Government).
+  - 5th character represents the first letter of the taxpayer's surname or entity name.
+- **Score Dynamics:** Strict category PANs receive `0.85` base score. General 5-letter PANs receive `0.40` boosted to `0.90` near context keywords (`"pan"`, `"income tax"`, `"form 16"`, `"itr"`).
+
+#### `IN_GSTIN`
+- **Specification:** Goods and Services Tax Identification Number.
+- **Format:** 15 characters (`[0-3][0-9][A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}`).
+- **Structure:** 2-digit State Code (01-38) + 10-character PAN + 1-digit entity count + `Z` + 1 check digit.
+
+#### `IN_IFSC`
+- **Specification:** Indian Financial System Code for electronic fund transfers (NEFT, RTGS, IMPS).
+- **Format:** 11 characters (`[A-Z]{4}0[A-Z0-9]{6}`).
+- **Structure:** 4-letter bank code + strictly `0` (reserved 5th character) + 6-character branch identifier.
+
+#### `IN_PASSPORT`
+- **Specification:** Republic of India Passport Booklet Number.
+- **Format:** 1 uppercase letter (`[A-PR-WYZ]`) + 7 consecutive digits.
+- **Context Gate:** Requires proximity to passport-related context (`"passport"`, `"republic of india"`, `"place of issue"`) to prevent collision with generic 8-character codes.
+
+#### `IN_VOTER_ID`
+- **Specification:** Elector's Photo Identity Card (EPIC) issued by Election Commission of India.
+- **Format:** 3 uppercase letters (Assembly/State code) + 7 digits (`[A-Z]{3}[0-9]{7}`).
+
+---
+
+### 4.6. Developer Secrets, API Keys & Cloud Credentials
+
+#### `AWS_ACCESS_KEY`
+- **Specification:** Amazon Web Services Access Key IDs.
+- **Prefixes:** `AKIA` (standard IAM user), `ASIA` (temporary STS credential), `AROA` (IAM role), `AIPA` (EC2 instance profile).
+- **Format:** 20 alphanumeric uppercase characters.
+- **Score:** `0.95`.
+
+#### `GITHUB_TOKEN`
+- **Specification:** GitHub Personal Access Tokens (PATs) and OAuth tokens.
+- **Classic Tokens:** Starts with `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` + 36 characters (Base62).
+- **Fine-Grained PATs:** Starts with `github_pat_` + 82 characters.
+- **Score:** `0.95` - `0.98`.
+
+#### `OPENAI_API_KEY`
+- **Specification:** OpenAI API Secret Keys.
+- **Format:** Starts with `sk-` (legacy) or `sk-proj-` (modern project keys) followed by 20 to 100 base64url characters.
+- **Score:** `0.90` (Boosted to `1.00` near `"openai"`, `"chatgpt"`).
+
+#### `GOOGLE_API_KEY`
+- **Specification:** Google Cloud Platform, Firebase, and Google Maps API Keys.
+- **Format:** Starts with `AIza` followed by 35 alphanumeric characters or `-_` (total 39 characters).
+- **Score:** `0.95`.
+
+#### `SLACK_TOKEN`
+- **Specification:** Slack Bot Tokens (`xoxb-`), User Tokens (`xoxp-`), App Tokens (`xoxa-`), and Incoming Webhook URLs.
+- **Score:** `0.95` - `0.98`.
+
+#### `PRIVATE_KEY`
+- **Specification:** PEM-formatted cryptographic private keys (RSA, ECDSA, Ed25519, DSA, OpenSSH, PGP).
+- **Format:** `-----BEGIN (RSA|EC|DSA|OPENSSH|PGP|ENCRYPTED) PRIVATE KEY-----`.
+- **Score:** `1.00` (Deterministic header detection).
+
+#### `JWT_TOKEN`
+- **Specification:** JSON Web Tokens (RFC 7519).
+- **Format:** Three base64url encoded parts separated by periods (`header.payload.signature`). Starts with `ey...`.
 
 ---
 
