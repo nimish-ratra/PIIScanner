@@ -91,6 +91,12 @@ c:\PIISentinalApp\
   4. `C:\Program Files\Java`
   5. `C:\Program Files (x86)\Java`
   6. `C:\Program Files\Microsoft`, `Amazon Corretto`, `BellSoft`
+- **Silent Subprocess Execution & Flash Prevention:**
+  - `_patch_tika_silent_process()`: Monkey-patches `tika.tika.Popen` so that internal Tika `cmd.exe` invocations run with `subprocess.CREATE_NO_WINDOW` (`0x08000000`) and `STARTUPINFO.wShowWindow = win32con.SW_HIDE` (`0`). This eliminates console window flashing when starting scans.
+  - Silent status checks: `check_java_status()` and `check_tesseract_status()` always pass `_get_silent_creationflags()` to `subprocess.run`.
+- **Thread-Safe Tika Pre-warming:**
+  - Guarded by `_tika_lock = threading.Lock()`.
+  - `ensure_tika_started()`: Pre-initializes the local Tika server synchronously once before multi-threaded file dispatch to eliminate worker race conditions.
 - **Fast-Path Fallback:** Directly reads `.txt`, `.json`, `.xml`, `.csv` if Tika is unavailable or slow.
 - **Size Safeguards:** Enforces `max_file_size_mb` (default 50 MB) before extraction.
 
@@ -103,6 +109,7 @@ c:\PIISentinalApp\
 - **Concurrency Architecture:** Utilizes `concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)`:
   - User can configure **1 to 8 workers** (default 2, recommended 2–4).
   - Yields 2.5× to 3× scan speedup across multi-core CPUs.
+  - Calls `ensure_tika_started()` once before spawning worker threads so threads don't simultaneously spawn multiple JVM instances.
 - **Thread Safety:** Uses `self._lock = threading.Lock()` to synchronize updates to `files_scanned`, `files_with_pii`, `findings`, `flagged_files`, `skipped_files`, and UI callback invocations (`on_progress`, `on_finding`, `on_log`).
 - **Responsive Controls:**
   - `pause()`: Sets `_pause_event.clear()`. In-flight worker threads wait at `self._pause_event.wait()` checkpoints.
@@ -177,13 +184,17 @@ python -m unittest tests/test_ui.py
 
 ## 7. Rules for Future AI Agents
 
-1. **Maintain Thread Safety:**
+1. **Continuously Update `CONTEXT.md`:**
+   - Whenever any changes (architectural, functional, UX fixes, or configuration) are made to the codebase, **always update `CONTEXT.md`** immediately to keep it 100% aligned with the latest state of the application.
+2. **Maintain Thread Safety:**
    - Any modifications touching `backend/scanner.py` must maintain lock synchronization around shared state and callback emissions.
    - UI updates must always cross from background worker threads to Qt GUI via PySide6 `Signal.emit()`. Never touch QWidget properties directly from worker threads.
-2. **Preserve Privacy Guarantees:**
+3. **Preserve Privacy Guarantees:**
    - Never introduce network calls, cloud dependencies, or telemetry logging.
    - Raw PII must never be written to plaintext temporary files or insecure logs; always use `redact_value` when displaying sensitive data in UI or summaries.
-3. **Respect `.gitignore`:**
+4. **Zero Console Window Flashing on Windows:**
+   - Never spawn child processes (`subprocess.Popen` or `subprocess.run`) on Windows without specifying `creationflags=subprocess.CREATE_NO_WINDOW` and `startupinfo.wShowWindow = 0` (`SW_HIDE`). Console windows flashing during normal app usage degrade UX and trigger user alarm.
+5. **Respect `.gitignore`:**
    - Never commit `dist/`, `build/`, `dist_installer/`, `__pycache__`, `*.db`, or `*.log` files to Git. Keep commits strictly clean.
-4. **Always Rebuild After Modifying Core Engine for .exe Deliverables:**
+6. **Always Rebuild After Modifying Core Engine for .exe Deliverables:**
    - When the user asks to see changes in the standalone `.exe`, run `python packaging/build.py` and verify both `dist/PIISentinel/PIISentinel.exe` and `dist_installer/PIISentinel_Setup_v1.0.exe` update.
