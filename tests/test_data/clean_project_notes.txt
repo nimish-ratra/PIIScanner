@@ -1,0 +1,4 @@
+Project Architecture Overview
+This document describes the software structure and subsystem communication protocols.
+All components operate locally using asynchronous event handling.
+No personal customer details are maintained in this technical guide.
