@@ -73,7 +73,9 @@ c:\PIISentinalApp\
 ├── dist/                     # Generated standalone executable folder (dist/PIISentinel/PIISentinel.exe)
 ├── dist_installer/           # Generated Windows setup installer (dist_installer/PIISentinel_Setup_v1.0.exe)
 ├── .gitignore                # Excludes build, dist, caches, logs, databases from git
+├── CONTEXT.md                # Single source of truth handbook for agents & developers
 ├── LICENSE                   # MIT License
+├── PRESIDIO_PII_CATALOG.md   # Complete Microsoft Presidio 23-entity specification & detection catalog
 ├── README.md                 # Public GitHub repository documentation
 └── requirements.txt          # Python project dependencies
 ```
@@ -101,8 +103,10 @@ c:\PIISentinalApp\
 - **Size Safeguards:** Enforces `max_file_size_mb` (default 50 MB) before extraction.
 
 ### 4.2. PII Detection & Redaction (`backend/presidio_detector.py`)
+- **Dedicated Reference Guide:** See [`PRESIDIO_PII_CATALOG.md`](file:///c:/PIISentinalApp/PRESIDIO_PII_CATALOG.md) for the complete 23-entity specification, regex patterns, checksums, and context word catalogs.
 - **Singleton Pattern:** `PresidioDetector.get_instance()` prevents reloading heavy spaCy language models into memory multiple times.
-- **Dynamic Entity Discovery:** Queries `analyzer.get_supported_entities()` at runtime (`EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `PERSON`, `IP_ADDRESS`, `US_SSN`, `IBAN_CODE`, `CRYPTO`, `DATE_TIME`, `LOCATION`, `URL`, etc.).
+- **Dynamic Entity Discovery:** Queries `analyzer.get_supported_entities()` at runtime (`EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `PERSON`, `IP_ADDRESS`, `US_SSN`, `IBAN_CODE`, `CRYPTO`, `DATE_TIME`, `LOCATION`, `URL`, etc. - 23 total entities).
+- **Large Document Chunking:** Splits documents > 150,000 characters with 500-character overlap to avoid spaCy memory limits.
 - **Redacted Previews:** `redact_value(val)` masks sensitive middle characters while retaining first and last characters for context (e.g. `alice@domain.com` -> `al********om`).
 
 ### 4.3. Multi-Worker Concurrent Scanning Engine (`backend/scanner.py`)
