@@ -24,6 +24,7 @@ Engineered with **Apache Tika** for universal document ingestion and **Microsoft
 
 ## ✨ Key Features
 
+- ⚡ **Concurrent Multi-Worker Engine:** Configurable worker threads (1–8 threads, default 2–4) configurable directly on the UI to scan and extract multiple documents in parallel for massive throughput gains.
 - 🔍 **Recursive Directory Auditing:** Scan deeply nested folder structures with pause, resume, and instant cancellation controls.
 - 📄 **Broad Format Ingestion:** Seamlessly extracts text from **PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, CSV, TXT, RTF, HTML, XML, JSON, ODT, ODS**.
 - 🧠 **Microsoft Presidio & spaCy Engine:**

@@ -78,6 +78,18 @@ class SettingsView(QWidget):
         size_layout.addWidget(self.spin_max_size)
         vbox_scan.addLayout(size_layout)
 
+        # Concurrent Workers
+        workers_layout = QHBoxLayout()
+        workers_layout.addWidget(QLabel("Default Concurrent Workers (1–8):", grp_scan))
+        workers_layout.addStretch()
+        self.spin_workers = QSpinBox(grp_scan)
+        self.spin_workers.setRange(1, 8)
+        self.spin_workers.setValue(config_manager.max_workers)
+        self.spin_workers.setSuffix(" threads")
+        self.spin_workers.setFixedWidth(110)
+        workers_layout.addWidget(self.spin_workers)
+        vbox_scan.addLayout(workers_layout)
+
         # Default output folder
         dest_layout = QHBoxLayout()
         dest_layout.addWidget(QLabel("Default Extraction Folder:", grp_scan))
@@ -209,6 +221,7 @@ class SettingsView(QWidget):
         self.lbl_thresh_display.setText(f"{config_manager.confidence_threshold:.2f} ({thresh_pct}%)")
 
         self.spin_max_size.setValue(config_manager.max_file_size_mb)
+        self.spin_workers.setValue(config_manager.max_workers)
         self.edit_dest.setText(config_manager.default_output_folder)
         self.edit_exts.setText(", ".join(config_manager.supported_extensions))
         self.chk_ocr.setChecked(config_manager.ocr_enabled)
@@ -220,6 +233,7 @@ class SettingsView(QWidget):
         """Write user selections to config_manager."""
         config_manager.confidence_threshold = self.slider_thresh.value() / 100.0
         config_manager.max_file_size_mb = self.spin_max_size.value()
+        config_manager.max_workers = self.spin_workers.value()
         config_manager.default_output_folder = self.edit_dest.text().strip()
 
         # Parse extensions

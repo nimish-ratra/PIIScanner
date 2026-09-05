@@ -108,15 +108,19 @@ class TestUI(unittest.TestCase):
         print("[OK] Results view table and filter tests passed.")
 
     def test_04_settings_view_persistence(self):
-        # Change slider in settings
+        # Change slider and workers in settings
         self.window.view_settings.slider_thresh.setValue(85)
+        self.window.view_settings.spin_workers.setValue(4)
         self.window.view_settings.save_settings()
         self.assertEqual(config_manager.confidence_threshold, 0.85)
+        self.assertEqual(config_manager.max_workers, 4)
 
         # Restore
         self.window.view_settings.slider_thresh.setValue(60)
+        self.window.view_settings.spin_workers.setValue(2)
         self.window.view_settings.save_settings()
         self.assertEqual(config_manager.confidence_threshold, 0.60)
+        self.assertEqual(config_manager.max_workers, 2)
         print("[OK] Settings persistence test passed.")
 
     def test_05_live_scan_via_ui(self):
@@ -125,11 +129,14 @@ class TestUI(unittest.TestCase):
 
         self.window.view_scan.edit_folder.setText(str(samples_dir))
         self.window.view_scan.slider_threshold.setValue(50)
+        self.window.view_scan.slider_workers.setValue(4)
         self.window.view_scan._on_start_scan()
 
         # Wait for worker thread to finish
         worker = self.window.view_scan.worker
         self.assertIsNotNone(worker)
+        self.assertEqual(worker.max_workers, 4)
+        self.assertEqual(worker.scanner.max_workers, 4)
         worker.wait(15000)  # Wait up to 15 seconds
 
         # Process any pending Qt events

@@ -23,6 +23,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "supported_extensions": DEFAULT_EXTENSIONS,
     "default_output_folder": "",
     "max_file_size_mb": 50,
+    "max_workers": 2,
     "ocr_enabled": False,
     "theme": "dark",
     "first_run_complete": False,
@@ -147,6 +148,14 @@ class ConfigManager:
     @max_file_size_mb.setter
     def max_file_size_mb(self, val: int) -> None:
         self.set("max_file_size_mb", int(val))
+
+    @property
+    def max_workers(self) -> int:
+        return max(1, min(int(self._config.get("max_workers", 2)), 8))
+
+    @max_workers.setter
+    def max_workers(self, val: int) -> None:
+        self.set("max_workers", max(1, min(int(val), 8)))
 
     @property
     def ocr_enabled(self) -> bool:

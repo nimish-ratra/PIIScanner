@@ -120,37 +120,64 @@ class ScanView(QWidget):
 
         config_layout.addWidget(entity_group, 3)
 
-        # 3b. Confidence Threshold Group
-        thresh_group = QGroupBox("Confidence Threshold", self)
-        thresh_vbox = QVBoxLayout(thresh_group)
-        thresh_vbox.setContentsMargins(16, 16, 16, 16)
-        thresh_vbox.setSpacing(10)
+        # 3b. Detection & Engine Configuration Group
+        engine_group = QGroupBox("Scan Configuration & Workers", self)
+        engine_vbox = QVBoxLayout(engine_group)
+        engine_vbox.setContentsMargins(16, 16, 16, 16)
+        engine_vbox.setSpacing(10)
 
+        # Confidence header
         thresh_header = QHBoxLayout()
         thresh_lbl = QLabel("Minimum Confidence:", self)
         thresh_lbl.setStyleSheet("color: #94a3b8; font-size: 12px;")
         self.lbl_threshold_val = QLabel("0.60 (60%)", self)
-        self.lbl_threshold_val.setStyleSheet("font-size: 16px; font-weight: 700; color: #60a5fa;")
+        self.lbl_threshold_val.setStyleSheet("font-size: 15px; font-weight: 700; color: #60a5fa;")
         thresh_header.addWidget(thresh_lbl)
         thresh_header.addStretch()
         thresh_header.addWidget(self.lbl_threshold_val)
-
-        thresh_vbox.addLayout(thresh_header)
+        engine_vbox.addLayout(thresh_header)
 
         self.slider_threshold = QSlider(Qt.Horizontal, self)
         self.slider_threshold.setRange(10, 100)
         default_thresh = int(config_manager.confidence_threshold * 100)
         self.slider_threshold.setValue(default_thresh)
         self.slider_threshold.valueChanged.connect(self._on_slider_changed)
-        thresh_vbox.addWidget(self.slider_threshold)
+        engine_vbox.addWidget(self.slider_threshold)
 
-        thresh_desc = QLabel("Findings with confidence score below this threshold will be excluded.", self)
-        thresh_desc.setWordWrap(True)
-        thresh_desc.setStyleSheet("color: #64748b; font-size: 11px;")
-        thresh_vbox.addWidget(thresh_desc)
-        thresh_vbox.addStretch()
+        # Divider
+        divider = QFrame(self)
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        divider.setStyleSheet("color: #1e293b; margin-top: 4px; margin-bottom: 4px;")
+        engine_vbox.addWidget(divider)
 
-        config_layout.addWidget(thresh_group, 2)
+        # Concurrent Workers header
+        worker_header = QHBoxLayout()
+        worker_lbl = QLabel("Concurrent Worker Threads:", self)
+        worker_lbl.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        self.lbl_workers_val = QLabel("", self)
+        self.lbl_workers_val.setStyleSheet("font-size: 15px; font-weight: 700; color: #34d399;")
+        worker_header.addWidget(worker_lbl)
+        worker_header.addStretch()
+        worker_header.addWidget(self.lbl_workers_val)
+        engine_vbox.addLayout(worker_header)
+
+        self.slider_workers = QSlider(Qt.Horizontal, self)
+        self.slider_workers.setRange(1, 8)
+        default_workers = config_manager.max_workers
+        self.slider_workers.setValue(default_workers)
+        self.slider_workers.valueChanged.connect(self._on_workers_changed)
+        engine_vbox.addWidget(self.slider_workers)
+
+        self._on_workers_changed(default_workers)
+
+        worker_desc = QLabel("Higher workers scan multiple files simultaneously (2-4 recommended).", self)
+        worker_desc.setWordWrap(True)
+        worker_desc.setStyleSheet("color: #64748b; font-size: 11px;")
+        engine_vbox.addWidget(worker_desc)
+        engine_vbox.addStretch()
+
+        config_layout.addWidget(engine_group, 2)
         main_layout.addLayout(config_layout)
 
         # 4. Action Controls Bar
@@ -324,6 +351,19 @@ class ScanView(QWidget):
         score = val / 100.0
         self.lbl_threshold_val.setText(f"{score:.2f} ({val}%)")
 
+    def _on_workers_changed(self, val: int) -> None:
+        if val == 1:
+            tier = "1 (Sequential)"
+        elif val == 2:
+            tier = "2 (Balanced - Recommended)"
+        elif val == 4:
+            tier = "4 (Fast - High CPU)"
+        elif val < 4:
+            tier = f"{val} (Balanced)"
+        else:
+            tier = f"{val} (Turbo)"
+        self.lbl_workers_val.setText(tier)
+
     def _on_start_scan(self) -> None:
         folder = self.edit_folder.text().strip()
         if not folder or not os.path.isdir(folder):
@@ -345,22 +385,28 @@ class ScanView(QWidget):
         self.lbl_current_file.setText(f"Scanning {folder}...")
         self.log_viewer.clear()
 
-        # Update button states
+        # Update button and input states
         self.btn_start.setEnabled(False)
         self.btn_browse.setEnabled(False)
         self.edit_folder.setEnabled(False)
+        self.slider_threshold.setEnabled(False)
+        self.slider_workers.setEnabled(False)
         self.btn_pause.setEnabled(True)
         self.btn_pause.setText("Pause")
         self.btn_cancel.setEnabled(True)
 
         # Launch Worker Thread
         threshold = self.slider_threshold.value() / 100.0
+        workers = self.slider_workers.value()
+        config_manager.max_workers = workers
+
         self.worker = ScanWorker(
             target_folder=folder,
             confidence_threshold=threshold,
             selected_entities=active_entities,
             supported_extensions=config_manager.supported_extensions,
             max_file_size_mb=config_manager.max_file_size_mb,
+            max_workers=workers,
             ocr_enabled=config_manager.ocr_enabled,
             parent=self
         )
@@ -424,6 +470,8 @@ class ScanView(QWidget):
         self.btn_start.setEnabled(True)
         self.btn_browse.setEnabled(True)
         self.edit_folder.setEnabled(True)
+        self.slider_threshold.setEnabled(True)
+        self.slider_workers.setEnabled(True)
         self.btn_pause.setEnabled(False)
         self.btn_pause.setText("Pause")
         self.btn_cancel.setEnabled(False)
@@ -436,5 +484,7 @@ class ScanView(QWidget):
         self.btn_start.setEnabled(True)
         self.btn_browse.setEnabled(True)
         self.edit_folder.setEnabled(True)
+        self.slider_threshold.setEnabled(True)
+        self.slider_workers.setEnabled(True)
         self.btn_pause.setEnabled(False)
         self.btn_cancel.setEnabled(False)

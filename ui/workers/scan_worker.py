@@ -26,6 +26,7 @@ class ScanWorker(QThread):
         selected_entities: Optional[List[str]] = None,
         supported_extensions: Optional[List[str]] = None,
         max_file_size_mb: int = 50,
+        max_workers: int = 2,
         ocr_enabled: bool = False,
         parent=None
     ):
@@ -35,6 +36,7 @@ class ScanWorker(QThread):
         self.selected_entities = selected_entities
         self.supported_extensions = supported_extensions
         self.max_file_size_mb = max_file_size_mb
+        self.max_workers = max_workers
         self.ocr_enabled = ocr_enabled
 
         self.scanner = Scanner(
@@ -43,6 +45,7 @@ class ScanWorker(QThread):
             confidence_threshold=self.confidence_threshold,
             selected_entities=self.selected_entities,
             max_file_size_mb=self.max_file_size_mb,
+            max_workers=self.max_workers,
             ocr_enabled=self.ocr_enabled
         )
 

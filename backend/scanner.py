@@ -9,6 +9,7 @@ import os
 import time
 import logging
 import threading
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Set
@@ -35,6 +36,7 @@ class Scanner:
         confidence_threshold: float = 0.6,
         selected_entities: Optional[List[str]] = None,
         max_file_size_mb: int = 50,
+        max_workers: int = 2,
         ocr_enabled: bool = False,
         reports_dir: Optional[str] = None
     ):
@@ -46,6 +48,7 @@ class Scanner:
         self.confidence_threshold = confidence_threshold
         self.selected_entities = selected_entities
         self.max_file_size_mb = max_file_size_mb
+        self.max_workers = max(1, min(int(max_workers), 8))
         self.ocr_enabled = ocr_enabled
         self.reports_dir = Path(reports_dir) if reports_dir else get_reports_dir()
 
@@ -53,6 +56,8 @@ class Scanner:
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
         self._pause_event.set()  # Not paused initially
+        self._lock = threading.Lock()
+        self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
         # State tracking
         self.scan_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -95,6 +100,11 @@ class Scanner:
         """Cancel and terminate the scan."""
         self._stop_event.set()
         self._pause_event.set()  # Unblock if currently paused
+        if self._executor:
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
         self._log_info("Scan cancellation requested.")
 
     def is_paused(self) -> bool:
@@ -128,6 +138,98 @@ class Scanner:
             self._log_warning(f"Error enumerating folder {self.target_folder}: {e}")
         return eligible
 
+    def _scan_single_file(self, filepath: str, total_files: int) -> None:
+        """Scan a single file for PII and update findings safely under lock."""
+        if self._stop_event.is_set():
+            return
+
+        # Handle pause before starting extraction
+        self._pause_event.wait()
+        if self._stop_event.is_set():
+            return
+
+        # File metadata
+        try:
+            stat = os.stat(filepath)
+            file_size = stat.st_size
+            mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            file_size = 0
+            mtime_str = ""
+
+        # Text extraction via Apache Tika
+        text, err = self.extractor.extract_text(filepath)
+        if err:
+            with self._lock:
+                self.files_scanned += 1
+                scanned = self.files_scanned
+                elapsed = time.time() - self.start_time
+                self.skipped_files.append({"file": filepath, "reason": err})
+                self._log_warning(f"Skipped {filepath}: {err}")
+                if self.on_progress:
+                    self.on_progress(scanned, total_files, filepath, elapsed)
+            return
+
+        if not text:
+            with self._lock:
+                self.files_scanned += 1
+                scanned = self.files_scanned
+                elapsed = time.time() - self.start_time
+                if self.on_progress:
+                    self.on_progress(scanned, total_files, filepath, elapsed)
+            return
+
+        if self._stop_event.is_set():
+            return
+
+        # Presidio entity detection
+        new_findings = []
+        try:
+            self._pause_event.wait()
+            if self._stop_event.is_set():
+                return
+
+            results = self.detector.analyze_text(
+                text=text,
+                entities=self.selected_entities,
+                score_threshold=self.confidence_threshold
+            )
+
+            if results:
+                for r in results:
+                    new_findings.append({
+                        "scan_id": self.scan_id,
+                        "file": filepath,
+                        "entity": r["entity"],
+                        "value": r["value"],
+                        "value_redacted": r["value_redacted"],
+                        "confidence": r["confidence"],
+                        "start": r["start"],
+                        "end": r["end"],
+                        "file_size_bytes": file_size,
+                        "last_modified": mtime_str
+                    })
+        except Exception as e:
+            with self._lock:
+                self._log_warning(f"Error detecting PII in {filepath}: {e}")
+
+        # Thread-safe state update and signal notifications
+        with self._lock:
+            self.files_scanned += 1
+            scanned = self.files_scanned
+            elapsed = time.time() - self.start_time
+
+            if new_findings:
+                self.files_with_pii += 1
+                self.flagged_files.add(filepath)
+                self.findings.extend(new_findings)
+                for f in new_findings:
+                    if self.on_finding:
+                        self.on_finding(f)
+
+            if self.on_progress:
+                self.on_progress(scanned, total_files, filepath, elapsed)
+
     def run(self) -> Dict[str, Any]:
         """
         Execute the scanning workflow.
@@ -141,80 +243,26 @@ class Scanner:
         self._log_info(f"Starting scan of folder: {self.target_folder}")
         self._log_info(f"Target extensions: {sorted(list(self.supported_extensions))}")
         self._log_info(f"Confidence threshold: {self.confidence_threshold}")
+        self._log_info(f"Concurrent workers: {self.max_workers}")
 
         # 1. Discover all matching files
         all_files = self._count_eligible_files()
         total_files = len(all_files)
         self._log_info(f"Discovered {total_files} eligible files to scan.")
 
-        # 2. Iterate through files
-        for filepath in all_files:
-            # Check for cancellation
-            if self._stop_event.is_set():
-                self._log_info("Scan aborted by user.")
-                break
-
-            # Handle pause
-            self._pause_event.wait()
-            if self._stop_event.is_set():
-                break
-
-            self.files_scanned += 1
-            elapsed = time.time() - self.start_time
-
-            if self.on_progress:
-                self.on_progress(self.files_scanned, total_files, filepath, elapsed)
-
-            # File metadata
-            try:
-                stat = os.stat(filepath)
-                file_size = stat.st_size
-                mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                file_size = 0
-                mtime_str = ""
-
-            # Text extraction
-            text, err = self.extractor.extract_text(filepath)
-            if err:
-                self.skipped_files.append({"file": filepath, "reason": err})
-                self._log_warning(f"Skipped {filepath}: {err}")
-                continue
-
-            if not text:
-                continue
-
-            # Presidio detection
-            try:
-                results = self.detector.analyze_text(
-                    text=text,
-                    entities=self.selected_entities,
-                    score_threshold=self.confidence_threshold
-                )
-
-                if results:
-                    self.files_with_pii += 1
-                    self.flagged_files.add(filepath)
-
-                    for r in results:
-                        finding = {
-                            "scan_id": self.scan_id,
-                            "file": filepath,
-                            "entity": r["entity"],
-                            "value": r["value"],
-                            "value_redacted": r["value_redacted"],
-                            "confidence": r["confidence"],
-                            "start": r["start"],
-                            "end": r["end"],
-                            "file_size_bytes": file_size,
-                            "last_modified": mtime_str
-                        }
-                        self.findings.append(finding)
-                        if self.on_finding:
-                            self.on_finding(finding)
-
-            except Exception as e:
-                self._log_warning(f"Error detecting PII in {filepath}: {e}")
+        # 2. Iterate through files concurrently
+        if total_files > 0:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                self._executor = executor
+                futures = [executor.submit(self._scan_single_file, fp, total_files) for fp in all_files]
+                for f in concurrent.futures.as_completed(futures):
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        f.result()
+                    except Exception as exc:
+                        self._log_warning(f"Worker task error: {exc}")
+                self._executor = None
 
         self.duration_seconds = round(time.time() - self.start_time, 2)
         self.is_running = False

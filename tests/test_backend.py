@@ -46,9 +46,15 @@ class TestBackend(unittest.TestCase):
         cfg.confidence_threshold = 0.75
         self.assertEqual(cfg.confidence_threshold, 0.75)
 
+        # Test max_workers property and persistence
+        self.assertEqual(cfg.max_workers, 2)
+        cfg.max_workers = 4
+        self.assertEqual(cfg.max_workers, 4)
+
         # Reload from disk
         cfg_reloaded = ConfigManager(config_path=cfg_path)
         self.assertEqual(cfg_reloaded.confidence_threshold, 0.75)
+        self.assertEqual(cfg_reloaded.max_workers, 4)
         print("[OK] ConfigManager test passed.")
 
     def test_02_database_manager(self):
@@ -182,6 +188,24 @@ class TestBackend(unittest.TestCase):
         self.assertTrue(Path(summary["report_html"]).exists())
 
         print(f"[OK] Scanner and reporter test passed. Summary: Scanned={summary['files_scanned']}, PII={summary['files_with_pii']}, Findings={summary['total_findings']}")
+
+    def test_08_multi_worker_scanner(self):
+        reports_dir = self.test_dir / "reports_multi"
+        scanner = Scanner(
+            target_folder=str(self.samples_dir),
+            confidence_threshold=0.5,
+            max_workers=4,
+            reports_dir=str(reports_dir)
+        )
+        self.assertEqual(scanner.max_workers, 4)
+        summary = scanner.run()
+
+        self.assertGreater(summary["files_scanned"], 0)
+        self.assertGreater(summary["files_with_pii"], 0)
+        self.assertGreater(summary["total_findings"], 0)
+        self.assertTrue(Path(summary["report_csv"]).exists())
+        self.assertTrue(Path(summary["report_html"]).exists())
+        print(f"[OK] Multi-worker (4 workers) scanner test passed. Scanned: {summary['files_scanned']}, Findings: {summary['total_findings']}")
 
 
 if __name__ == "__main__":
