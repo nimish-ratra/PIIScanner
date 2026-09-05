@@ -1,7 +1,7 @@
 """
 Main Application Window for PII Sentinel
-Coordinates sidebar navigation, stacked views (Scan, Results, History, Settings),
-theme switching, and inter-view workflows.
+Coordinates enterprise sidebar navigation, top header bar with 1-click theme switching,
+stacked views (Scan, Results, History, Settings), and inter-view workflows.
 """
 
 from pathlib import Path
@@ -30,9 +30,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PII Sentinel - Windows Desktop Scanner")
-        self.resize(1120, 750)
-        self.setMinimumSize(950, 620)
+        self.setWindowTitle("PII Sentinel - Windows Desktop Security Scanner")
+        self.resize(1180, 780)
+        self.setMinimumSize(980, 640)
 
         icon_path = Path(__file__).parent.parent / "packaging" / "assets" / "app_icon.png"
         if icon_path.exists():
@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
         # Brand Header
         lbl_brand = QLabel("🛡️ PII SENTINEL", sidebar)
         lbl_brand.setObjectName("sidebarTitle")
-        lbl_brand_sub = QLabel("Local Privacy & Audit Suite", sidebar)
+        lbl_brand_sub = QLabel("Enterprise Privacy & Audit Suite", sidebar)
         lbl_brand_sub.setObjectName("sidebarSubtitle")
 
         sidebar_layout.addWidget(lbl_brand)
@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
 
         # Offline Guarantee Badge
         badge_container = QHBoxLayout()
-        badge_container.setContentsMargins(16, 10, 16, 14)
+        badge_container.setContentsMargins(16, 12, 16, 16)
         lbl_offline = QLabel("🔒 100% OFFLINE", sidebar)
         lbl_offline.setObjectName("badgeOffline")
         badge_container.addWidget(lbl_offline)
@@ -81,9 +81,9 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
 
         self.btn_nav_scan = self._create_nav_button("🔍  Scan Directory", 0)
-        self.btn_nav_results = self._create_nav_button("📊  Results & Action", 1)
+        self.btn_nav_results = self._create_nav_button("📊  Results && Action", 1)
         self.btn_nav_history = self._create_nav_button("🕒  Scan History", 2)
-        self.btn_nav_settings = self._create_nav_button("⚙️  Settings & Health", 3)
+        self.btn_nav_settings = self._create_nav_button("⚙️  Settings && Health", 3)
 
         sidebar_layout.addWidget(self.btn_nav_scan)
         sidebar_layout.addWidget(self.btn_nav_results)
@@ -102,11 +102,11 @@ class MainWindow(QMainWindow):
         java_status = check_java_status()
         jvm_text = "JVM Connected" if java_status.get("available") else "Java Missing"
         self.lbl_jvm = QLabel(f"• {jvm_text}", sidebar_footer)
-        self.lbl_jvm.setStyleSheet("font-size: 11px; color: #34d399;" if java_status.get("available") else "font-size: 11px; color: #f87171;")
+        self.lbl_jvm.setStyleSheet("font-size: 11px; color: #34d399; font-weight: 600;" if java_status.get("available") else "font-size: 11px; color: #f87171; font-weight: 600;")
         footer_layout.addWidget(self.lbl_jvm)
 
-        btn_about = QPushButton("Privacy & Help", sidebar_footer)
-        btn_about.setFixedHeight(28)
+        btn_about = QPushButton("Privacy && Help", sidebar_footer)
+        btn_about.setFixedHeight(30)
         btn_about.setStyleSheet("font-size: 11px;")
         btn_about.clicked.connect(self._show_onboarding)
         footer_layout.addWidget(btn_about)
@@ -114,8 +114,34 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(sidebar_footer)
         root_layout.addWidget(sidebar)
 
-        # 2. Stacked Content Area
-        self.stack = QStackedWidget(self)
+        # 2. Right Content Container (Top Bar + Stacked Pages)
+        content_container = QWidget(self)
+        content_layout = QVBoxLayout(content_container)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # Enterprise Top Utility Bar
+        top_bar = QFrame(content_container)
+        top_bar.setObjectName("topBar")
+        top_bar_layout = QHBoxLayout(top_bar)
+        top_bar_layout.setContentsMargins(24, 8, 24, 8)
+        top_bar_layout.setSpacing(16)
+
+        lbl_privacy_badge = QLabel("🛡️ AIR-GAPPED ENVIRONMENT: ZERO TELEMETRY • LOCAL ENGINES", top_bar)
+        lbl_privacy_badge.setObjectName("badgeOffline")
+
+        # 1-Click Dark/Light Theme Switcher
+        self.btn_theme_toggle = QPushButton("🌙 Dark Mode", top_bar)
+        self.btn_theme_toggle.setObjectName("themeToggleButton")
+        self.btn_theme_toggle.clicked.connect(self._toggle_theme)
+
+        top_bar_layout.addWidget(lbl_privacy_badge)
+        top_bar_layout.addStretch()
+        top_bar_layout.addWidget(self.btn_theme_toggle)
+        content_layout.addWidget(top_bar)
+
+        # Stacked Views
+        self.stack = QStackedWidget(content_container)
         self.stack.setObjectName("contentArea")
 
         self.view_scan = ScanView(self)
@@ -128,12 +154,13 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.view_history)    # Index 2
         self.stack.addWidget(self.view_settings)   # Index 3
 
-        root_layout.addWidget(self.stack, 1)
+        content_layout.addWidget(self.stack, 1)
+        root_layout.addWidget(content_container, 1)
 
         # 3. Status Bar
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Ready - All document parsing and NLP detection runs 100% locally.")
+        self.status_bar.showMessage("Ready - All document parsing and NLP detection runs 100% locally on host CPU/JVM.")
 
         # Default to Scan Tab
         self.btn_nav_scan.setChecked(True)
@@ -161,6 +188,15 @@ class MainWindow(QMainWindow):
         # When theme is toggled in settings, update stylesheet
         self.view_settings.theme_changed_signal.connect(self._apply_theme)
 
+    def _toggle_theme(self) -> None:
+        """Instant 1-click toggle between Dark and Light mode."""
+        current = config_manager.theme.lower()
+        new_theme = "light" if current == "dark" else "dark"
+        config_manager.theme = new_theme
+        config_manager.set("theme", new_theme)
+        self._apply_theme(new_theme)
+        self.view_settings.sync_theme(new_theme)
+
     def _on_scan_completed(self, summary: Dict[str, Any]) -> None:
         findings = self.view_scan.worker.scanner.findings if self.view_scan.worker and self.view_scan.worker.scanner else []
         self.view_results.set_scan_results(summary, findings)
@@ -183,8 +219,14 @@ class MainWindow(QMainWindow):
         self._apply_theme(theme)
 
     def _apply_theme(self, theme_name: str) -> None:
-        qss = get_theme_qss(theme_name)
+        theme_lower = str(theme_name).lower()
+        qss = get_theme_qss(theme_lower)
         self.setStyleSheet(qss)
+        if hasattr(self, "btn_theme_toggle"):
+            if theme_lower == "light":
+                self.btn_theme_toggle.setText("☀️ Light Mode")
+            else:
+                self.btn_theme_toggle.setText("🌙 Dark Mode")
 
     def _check_first_run(self) -> None:
         if not config_manager.first_run_complete:

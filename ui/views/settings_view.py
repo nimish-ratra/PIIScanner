@@ -159,17 +159,23 @@ class SettingsView(QWidget):
         layout.addWidget(grp_sys)
 
         # 4. Appearance Card
-        grp_app = QGroupBox("Appearance", container)
+        grp_app = QGroupBox("Appearance & Display", container)
         vbox_app = QVBoxLayout(grp_app)
+        vbox_app.setSpacing(10)
 
         theme_box = QHBoxLayout()
-        theme_box.addWidget(QLabel("Interface Theme:", grp_app))
+        theme_box.addWidget(QLabel("Interface Theme Mode:", grp_app))
         self.combo_theme = QComboBox(grp_app)
         self.combo_theme.addItems(["Dark", "Light"])
-        self.combo_theme.setFixedWidth(120)
+        self.combo_theme.setFixedWidth(140)
+        self.combo_theme.currentIndexChanged.connect(self._on_theme_combo_changed)
         theme_box.addStretch()
         theme_box.addWidget(self.combo_theme)
         vbox_app.addLayout(theme_box)
+
+        theme_hint = QLabel("Switch between Obsidian Slate (Dark) and Studio Slate (Light) themes instantly.", grp_app)
+        theme_hint.setStyleSheet("color: #64748b; font-size: 11px;")
+        vbox_app.addWidget(theme_hint)
 
         layout.addWidget(grp_app)
 
@@ -213,6 +219,21 @@ class SettingsView(QWidget):
                     "Tesseract OCR was not found in standard system locations.\n"
                     "Please install Tesseract OCR on Windows if you need to extract text from scanned image PDFs."
                 )
+
+    def _on_theme_combo_changed(self, idx: int) -> None:
+        selected_theme = self.combo_theme.currentText().lower()
+        if selected_theme in ["dark", "light"]:
+            config_manager.theme = selected_theme
+            config_manager.set("theme", selected_theme)
+            self.theme_changed_signal.emit(selected_theme)
+
+    def sync_theme(self, theme_name: str) -> None:
+        """Sync combo box from external theme switch (e.g. top bar toggle)."""
+        theme_title = str(theme_name).capitalize()
+        if theme_title in ["Dark", "Light"]:
+            self.combo_theme.blockSignals(True)
+            self.combo_theme.setCurrentText(theme_title)
+            self.combo_theme.blockSignals(False)
 
     def load_settings(self) -> None:
         """Populate controls with current config_manager settings."""

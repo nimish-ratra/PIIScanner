@@ -127,6 +127,18 @@ c:\PIISentinalApp\
   - `report.html` (Interactive dashboard with KPI stat cards, risk breakdown, and sortable tables).
 - SQLite history stored in `%APPDATA%\PIISentinel\history.db`.
 
+### 4.6. Enterprise UI & Dual-Theme System (`ui/theme.py`, `ui/main_window.py`, `ui/views/scan_view.py`)
+- **Responsive Non-Squishing Layout Architecture**:
+  - `ScanView` encases all components in a root `QScrollArea(setWidgetResizable=True)`, preventing layout compression bugs on lower-resolution displays and Windows DPI scaling (125%/150%).
+  - `StatCard` enforces guaranteed `min-height: 82px` and `min-width: 130px` dimensions so KPI titles and values never collapse into empty slots.
+  - Dynamic entity checkboxes utilize a 2-column grid with generous spacing so entity labels are never truncated with ellipses.
+- **Dual-Theme Architecture ("Obsidian Slate" Dark & "Studio Slate" Light)**:
+  - Top header bar provides an instant 1-click theme switcher (`🌙 Dark Mode` / `☀️ Light Mode`).
+  - Preference is dynamically persisted in `%APPDATA%\PIISentinel\config.json` and synchronized with `SettingsView`.
+  - Color palettes adhere to high-contrast enterprise design standards (zinc/slate backgrounds, electric blue/emerald accents, crisp readable typography).
+- **Qt Mnemonic Protection**:
+  - Uses `&&` in `QGroupBox` titles and `QPushButton` labels (e.g. `Results && Action`, `Engine && Concurrency Settings`) to prevent Qt mnemonic accelerator keys from hiding ampersands.
+
 ---
 
 ## 5. Build Pipeline & Executable Creation

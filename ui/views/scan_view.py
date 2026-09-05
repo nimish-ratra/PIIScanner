@@ -1,7 +1,8 @@
 """
 Scan View for PII Sentinel
-Provides folder selection, dynamic entity selection checkboxes, confidence threshold slider,
-scan execution controls (Start/Pause/Resume/Cancel), live KPI cards, progress bar, and log drawer.
+Provides responsive directory selection, dynamic PII entity chips,
+worker concurrency slider, execution controls, KPI telemetry, and live activity logs.
+Encased in a root QScrollArea to prevent any layout squishing or text clipping.
 """
 
 import os
@@ -37,167 +38,213 @@ class ScanView(QWidget):
         self._update_folder_preview()
 
     def _init_ui(self) -> None:
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(24, 24, 24, 24)
-        main_layout.setSpacing(16)
+        # Outer layout containing root scroll area
+        root_vbox = QVBoxLayout(self)
+        root_vbox.setContentsMargins(0, 0, 0, 0)
+        root_vbox.setSpacing(0)
+
+        # Root ScrollArea ensures no content is squished on small screens or DPI scaling
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        container = QWidget()
+        main_layout = QVBoxLayout(container)
+        main_layout.setContentsMargins(24, 16, 24, 20)
+        main_layout.setSpacing(14)
 
         # 1. Title Header
-        title_label = QLabel("Directory Scanner", self)
-        title_label.setStyleSheet("font-size: 22px; font-weight: 800; color: #f8fafc;")
-        subtitle_label = QLabel("Select a folder to recursively analyze documents for Personally Identifiable Information.", self)
+        header_vbox = QVBoxLayout()
+        header_vbox.setSpacing(2)
+
+        title_label = QLabel("Enterprise Directory Scanner", container)
+        title_label.setStyleSheet("font-size: 22px; font-weight: 800; letter-spacing: -0.3px;")
+
+        subtitle_label = QLabel(
+            "Recursively inspect local directories and documents for sensitive PII using air-gapped on-premise engines.",
+            container
+        )
         subtitle_label.setStyleSheet("font-size: 13px; color: #94a3b8;")
 
-        main_layout.addWidget(title_label)
-        main_layout.addWidget(subtitle_label)
+        header_vbox.addWidget(title_label)
+        header_vbox.addWidget(subtitle_label)
+        main_layout.addLayout(header_vbox)
 
-        # 2. Directory Selection Card
-        dir_group = QGroupBox("Target Directory", self)
+        # 2. Target Directory Card
+        dir_group = QGroupBox("Target Directory", container)
         dir_layout = QVBoxLayout(dir_group)
-        dir_layout.setContentsMargins(14, 14, 14, 14)
+        dir_layout.setContentsMargins(16, 14, 16, 14)
         dir_layout.setSpacing(8)
 
         input_row = QHBoxLayout()
         input_row.setSpacing(10)
 
-        self.edit_folder = QLineEdit(self)
-        self.edit_folder.setPlaceholderText("Select or drag & drop folder to scan recursively...")
+        self.edit_folder = QLineEdit(dir_group)
+        self.edit_folder.setFixedHeight(38)
+        self.edit_folder.setPlaceholderText("Select or drag & drop folder to audit recursively...")
         self.edit_folder.setText(config_manager.get("last_scanned_folder", ""))
         self.edit_folder.textChanged.connect(self._update_folder_preview)
 
-        self.btn_browse = QPushButton("Browse Folder...", self)
+        self.btn_browse = QPushButton("📁 Browse Directory...", dir_group)
+        self.btn_browse.setFixedHeight(38)
+        self.btn_browse.setFixedWidth(170)
         self.btn_browse.clicked.connect(self._on_browse_folder)
 
-        input_row.addWidget(self.edit_folder)
+        input_row.addWidget(self.edit_folder, 1)
         input_row.addWidget(self.btn_browse)
         dir_layout.addLayout(input_row)
 
         # Real-time folder preview & helper notice
-        self.lbl_folder_preview = QLabel(self)
+        self.lbl_folder_preview = QLabel(dir_group)
         self.lbl_folder_preview.setWordWrap(True)
         dir_layout.addWidget(self.lbl_folder_preview)
 
         main_layout.addWidget(dir_group)
-
         self.setAcceptDrops(True)
 
-        # 3. Detection Configuration (Entity Selection + Confidence Slider)
+        # 3. Two-Column Configuration Grid
         config_layout = QHBoxLayout()
         config_layout.setSpacing(16)
 
-        # 3a. Entity Selection Group
-        entity_group = QGroupBox("PII Entity Types", self)
+        # 3a. Left Column: Entity Selection Group
+        entity_group = QGroupBox("PII Detection Types", container)
         entity_vbox = QVBoxLayout(entity_group)
+        entity_vbox.setContentsMargins(16, 14, 16, 14)
+        entity_vbox.setSpacing(10)
 
-        # Controls bar (Select All / Clear All)
+        # Quick action controls
         btn_bar = QHBoxLayout()
-        self.btn_select_all_entities = QPushButton("Select All", self)
+        btn_bar.setSpacing(8)
+
+        self.btn_select_all_entities = QPushButton("Select All", entity_group)
         self.btn_select_all_entities.setFixedHeight(26)
-        self.btn_select_all_entities.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.btn_select_all_entities.setStyleSheet("font-size: 11px; padding: 2px 10px;")
         self.btn_select_all_entities.clicked.connect(self._select_all_entities)
 
-        self.btn_clear_entities = QPushButton("Deselect All", self)
+        self.btn_clear_entities = QPushButton("Deselect All", entity_group)
         self.btn_clear_entities.setFixedHeight(26)
-        self.btn_clear_entities.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.btn_clear_entities.setStyleSheet("font-size: 11px; padding: 2px 10px;")
         self.btn_clear_entities.clicked.connect(self._deselect_all_entities)
+
+        self.lbl_selected_count = QLabel("All Selected", entity_group)
+        self.lbl_selected_count.setStyleSheet("font-size: 11px; color: #60a5fa; font-weight: 600;")
 
         btn_bar.addWidget(self.btn_select_all_entities)
         btn_bar.addWidget(self.btn_clear_entities)
         btn_bar.addStretch()
+        btn_bar.addWidget(self.lbl_selected_count)
         entity_vbox.addLayout(btn_bar)
 
         # Scroll area for dynamic entities
-        self.entity_scroll = QScrollArea(self)
+        self.entity_scroll = QScrollArea(entity_group)
         self.entity_scroll.setWidgetResizable(True)
-        self.entity_scroll.setFixedHeight(120)
-        self.entity_scroll.setStyleSheet("background: transparent; border: 1px solid #1e293b; border-radius: 6px;")
+        self.entity_scroll.setFixedHeight(135)
+        self.entity_scroll.setStyleSheet(
+            "background-color: transparent; border: 1px solid #1e2e4a; border-radius: 8px;"
+        )
 
         self.entity_container = QWidget()
         self.entity_grid = QGridLayout(self.entity_container)
-        self.entity_grid.setContentsMargins(8, 8, 8, 8)
+        self.entity_grid.setContentsMargins(10, 8, 10, 8)
         self.entity_grid.setSpacing(8)
         self.entity_scroll.setWidget(self.entity_container)
         entity_vbox.addWidget(self.entity_scroll)
 
         config_layout.addWidget(entity_group, 3)
 
-        # 3b. Detection & Engine Configuration Group
-        engine_group = QGroupBox("Scan Configuration & Workers", self)
+        # 3b. Right Column: Scan Engine & Concurrency Configuration Group
+        engine_group = QGroupBox("Engine && Concurrency Settings", container)
         engine_vbox = QVBoxLayout(engine_group)
-        engine_vbox.setContentsMargins(16, 16, 16, 16)
-        engine_vbox.setSpacing(10)
+        engine_vbox.setContentsMargins(16, 14, 16, 14)
+        engine_vbox.setSpacing(12)
 
-        # Confidence header
-        thresh_header = QHBoxLayout()
-        thresh_lbl = QLabel("Minimum Confidence:", self)
-        thresh_lbl.setStyleSheet("color: #94a3b8; font-size: 12px;")
-        self.lbl_threshold_val = QLabel("0.60 (60%)", self)
-        self.lbl_threshold_val.setStyleSheet("font-size: 15px; font-weight: 700; color: #60a5fa;")
-        thresh_header.addWidget(thresh_lbl)
-        thresh_header.addStretch()
-        thresh_header.addWidget(self.lbl_threshold_val)
-        engine_vbox.addLayout(thresh_header)
-
-        self.slider_threshold = QSlider(Qt.Horizontal, self)
-        self.slider_threshold.setRange(10, 100)
-        default_thresh = int(config_manager.confidence_threshold * 100)
-        self.slider_threshold.setValue(default_thresh)
-        self.slider_threshold.valueChanged.connect(self._on_slider_changed)
-        engine_vbox.addWidget(self.slider_threshold)
-
-        # Divider
-        divider = QFrame(self)
-        divider.setFrameShape(QFrame.HLine)
-        divider.setFrameShadow(QFrame.Sunken)
-        divider.setStyleSheet("color: #1e293b; margin-top: 4px; margin-bottom: 4px;")
-        engine_vbox.addWidget(divider)
-
-        # Concurrent Workers header
+        # Concurrent Workers Section
         worker_header = QHBoxLayout()
-        worker_lbl = QLabel("Concurrent Worker Threads:", self)
-        worker_lbl.setStyleSheet("color: #94a3b8; font-size: 12px;")
-        self.lbl_workers_val = QLabel("", self)
-        self.lbl_workers_val.setStyleSheet("font-size: 15px; font-weight: 700; color: #34d399;")
+        worker_lbl = QLabel("Concurrent Worker Threads:", engine_group)
+        worker_lbl.setStyleSheet("font-weight: 600; font-size: 12px;")
+        self.lbl_workers_val = QLabel("", engine_group)
+        self.lbl_workers_val.setStyleSheet(
+            "background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); "
+            "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 12px;"
+        )
         worker_header.addWidget(worker_lbl)
         worker_header.addStretch()
         worker_header.addWidget(self.lbl_workers_val)
         engine_vbox.addLayout(worker_header)
 
-        self.slider_workers = QSlider(Qt.Horizontal, self)
+        self.slider_workers = QSlider(Qt.Horizontal, engine_group)
         self.slider_workers.setRange(1, 8)
         default_workers = config_manager.max_workers
         self.slider_workers.setValue(default_workers)
         self.slider_workers.valueChanged.connect(self._on_workers_changed)
         engine_vbox.addWidget(self.slider_workers)
 
+        worker_guide = QLabel("1 (Sequential)   •   2 (Balanced)   •   4 (Fast)   •   8 (Turbo)", engine_group)
+        worker_guide.setStyleSheet("color: #64748b; font-size: 10px; font-weight: 600;")
+        engine_vbox.addWidget(worker_guide)
+
         self._on_workers_changed(default_workers)
 
-        worker_desc = QLabel("Higher workers scan multiple files simultaneously (2-4 recommended).", self)
-        worker_desc.setWordWrap(True)
-        worker_desc.setStyleSheet("color: #64748b; font-size: 11px;")
-        engine_vbox.addWidget(worker_desc)
+        # Divider
+        divider = QFrame(engine_group)
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        divider.setStyleSheet("color: #1e293b; margin-top: 4px; margin-bottom: 4px;")
+        engine_vbox.addWidget(divider)
+
+        # Confidence Threshold Section
+        thresh_header = QHBoxLayout()
+        thresh_lbl = QLabel("Minimum Confidence Threshold:", engine_group)
+        thresh_lbl.setStyleSheet("font-weight: 600; font-size: 12px;")
+        self.lbl_threshold_val = QLabel("0.60 (60%)", engine_group)
+        self.lbl_threshold_val.setStyleSheet(
+            "background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.35); "
+            "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 12px;"
+        )
+        thresh_header.addWidget(thresh_lbl)
+        thresh_header.addStretch()
+        thresh_header.addWidget(self.lbl_threshold_val)
+        engine_vbox.addLayout(thresh_header)
+
+        self.slider_threshold = QSlider(Qt.Horizontal, engine_group)
+        self.slider_threshold.setRange(10, 100)
+        default_thresh = int(config_manager.confidence_threshold * 100)
+        self.slider_threshold.setValue(default_thresh)
+        self.slider_threshold.valueChanged.connect(self._on_slider_changed)
+        engine_vbox.addWidget(self.slider_threshold)
+
+        thresh_desc = QLabel("Higher threshold reduces false positives; lower finds subtle entity matches.", engine_group)
+        thresh_desc.setWordWrap(True)
+        thresh_desc.setStyleSheet("color: #64748b; font-size: 11px;")
+        engine_vbox.addWidget(thresh_desc)
         engine_vbox.addStretch()
 
         config_layout.addWidget(engine_group, 2)
         main_layout.addLayout(config_layout)
 
-        # 4. Action Controls Bar
+        # 4. Primary Action Controls Bar
         controls_bar = QHBoxLayout()
-        controls_bar.setSpacing(12)
+        controls_bar.setSpacing(14)
 
-        self.btn_start = QPushButton("  Start Scan", self)
+        self.btn_start = QPushButton("  ▶  Start Audit Scan", container)
         self.btn_start.setObjectName("primaryButton")
-        self.btn_start.setFixedHeight(38)
+        self.btn_start.setFixedHeight(42)
+        self.btn_start.setMinimumWidth(180)
         self.btn_start.clicked.connect(self._on_start_scan)
 
-        self.btn_pause = QPushButton("Pause", self)
+        self.btn_pause = QPushButton("⏸  Pause", container)
         self.btn_pause.setObjectName("warningButton")
-        self.btn_pause.setFixedHeight(38)
+        self.btn_pause.setFixedHeight(42)
+        self.btn_pause.setMinimumWidth(110)
         self.btn_pause.setEnabled(False)
         self.btn_pause.clicked.connect(self._on_toggle_pause)
 
-        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_cancel = QPushButton("⏹  Cancel", container)
         self.btn_cancel.setObjectName("dangerButton")
-        self.btn_cancel.setFixedHeight(38)
+        self.btn_cancel.setFixedHeight(42)
+        self.btn_cancel.setMinimumWidth(110)
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._on_cancel_scan)
 
@@ -208,29 +255,35 @@ class ScanView(QWidget):
 
         main_layout.addLayout(controls_bar)
 
-        # 5. Live Progress & KPI Metrics
-        progress_box = QGroupBox("Live Scan Progress", self)
+        # 5. Live Progress & Telemetry KPIs
+        progress_box = QGroupBox("Live Scan Progress && Telemetry", container)
         progress_vbox = QVBoxLayout(progress_box)
-        progress_vbox.setContentsMargins(16, 16, 16, 16)
-        progress_vbox.setSpacing(12)
+        progress_vbox.setContentsMargins(18, 18, 18, 18)
+        progress_vbox.setSpacing(14)
 
-        self.progress_bar = QProgressBar(self)
+        # Progress bar
+        self.progress_bar = QProgressBar(progress_box)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(22)
         progress_vbox.addWidget(self.progress_bar)
 
-        self.lbl_current_file = QLabel("Ready to scan", self)
+        # Current file indicator
+        file_row = QHBoxLayout()
+        self.lbl_current_file = QLabel("Ready to scan", progress_box)
         self.lbl_current_file.setStyleSheet("color: #94a3b8; font-family: monospace; font-size: 12px;")
-        progress_vbox.addWidget(self.lbl_current_file)
+        file_row.addWidget(self.lbl_current_file)
+        file_row.addStretch()
+        progress_vbox.addLayout(file_row)
 
-        # Metric Cards Grid
+        # Metric Cards Grid (Guaranteed minimum dimensions, never collapses)
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(14)
 
-        self.card_scanned = StatCard("Files Scanned", "0", "#60a5fa", self)
-        self.card_flagged = StatCard("Files with PII", "0", "#f87171", self)
-        self.card_findings = StatCard("Total Findings", "0", "#fbbf24", self)
-        self.card_time = StatCard("Elapsed Time", "0.0s", "#34d399", self)
+        self.card_scanned = StatCard("Files Scanned", "0", "#38bdf8", "📁", progress_box)
+        self.card_flagged = StatCard("Files with PII", "0", "#f87171", "⚠️", progress_box)
+        self.card_findings = StatCard("Total Findings", "0", "#fbbf24", "🔍", progress_box)
+        self.card_time = StatCard("Elapsed Time", "0.0s", "#34d399", "⏱️", progress_box)
 
         metrics_layout.addWidget(self.card_scanned)
         metrics_layout.addWidget(self.card_flagged)
@@ -241,9 +294,12 @@ class ScanView(QWidget):
         main_layout.addWidget(progress_box)
 
         # 6. Live Activity Log Viewer
-        self.log_viewer = LogViewer(self)
-        self.log_viewer.setFixedHeight(140)
+        self.log_viewer = LogViewer(container)
         main_layout.addWidget(self.log_viewer)
+
+        # Finalize root scroll area
+        scroll.setWidget(container)
+        root_vbox.addWidget(scroll)
 
     def _load_entities(self) -> None:
         """Query Presidio dynamically for supported entities and populate checkboxes."""
@@ -257,12 +313,13 @@ class ScanView(QWidget):
 
         row = 0
         col = 0
-        cols_per_row = 3
+        cols_per_row = 2
 
         for entity in sorted(entities):
             cb = QCheckBox(entity, self.entity_container)
             is_checked = (not saved_entities) or (entity in saved_entities)
             cb.setChecked(is_checked)
+            cb.stateChanged.connect(self._on_entity_checkbox_changed)
             self.entity_checkboxes[entity] = cb
             self.entity_grid.addWidget(cb, row, col)
 
@@ -271,13 +328,30 @@ class ScanView(QWidget):
                 col = 0
                 row += 1
 
+        self._update_selected_count_label()
+
+    def _on_entity_checkbox_changed(self) -> None:
+        self._update_selected_count_label()
+
+    def _update_selected_count_label(self) -> None:
+        total = len(self.entity_checkboxes)
+        selected = sum(1 for cb in self.entity_checkboxes.values() if cb.isChecked())
+        if selected == total:
+            self.lbl_selected_count.setText(f"All ({total}) Selected")
+        elif selected == 0:
+            self.lbl_selected_count.setText("None Selected (Warning)")
+        else:
+            self.lbl_selected_count.setText(f"{selected} of {total} Selected")
+
     def _select_all_entities(self) -> None:
         for cb in self.entity_checkboxes.values():
             cb.setChecked(True)
+        self._update_selected_count_label()
 
     def _deselect_all_entities(self) -> None:
         for cb in self.entity_checkboxes.values():
             cb.setChecked(False)
+        self._update_selected_count_label()
 
     def _get_active_entities(self) -> Optional[List[str]]:
         selected = [ent for ent, cb in self.entity_checkboxes.items() if cb.isChecked()]
@@ -301,8 +375,7 @@ class ScanView(QWidget):
         folder = self.edit_folder.text().strip()
         if not folder or not os.path.isdir(folder):
             self.lbl_folder_preview.setText(
-                "💡 Note: The Windows folder browser only lists subfolders, not individual files. "
-                "Open your target folder and click 'Select Folder' at the bottom right."
+                "💡 Note: Click 'Browse Directory...' or paste a target folder to scan all documents recursively."
             )
             self.lbl_folder_preview.setStyleSheet("color: #64748b; font-size: 11px;")
             return
@@ -353,15 +426,15 @@ class ScanView(QWidget):
 
     def _on_workers_changed(self, val: int) -> None:
         if val == 1:
-            tier = "1 (Sequential)"
+            tier = "1 Worker [Sequential]"
         elif val == 2:
-            tier = "2 (Balanced - Recommended)"
+            tier = "2 Workers [Balanced]"
         elif val == 4:
-            tier = "4 (Fast - High CPU)"
+            tier = "4 Workers [Fast - High CPU]"
         elif val < 4:
-            tier = f"{val} (Balanced)"
+            tier = f"{val} Workers [Balanced]"
         else:
-            tier = f"{val} (Turbo)"
+            tier = f"{val} Workers [Turbo]"
         self.lbl_workers_val.setText(tier)
 
     def _on_start_scan(self) -> None:
@@ -382,7 +455,7 @@ class ScanView(QWidget):
         self.card_flagged.set_value("0")
         self.card_findings.set_value("0")
         self.card_time.set_value("0.0s")
-        self.lbl_current_file.setText(f"Scanning {folder}...")
+        self.lbl_current_file.setText(f"Initializing scan for {folder}...")
         self.log_viewer.clear()
 
         # Update button and input states
@@ -392,7 +465,7 @@ class ScanView(QWidget):
         self.slider_threshold.setEnabled(False)
         self.slider_workers.setEnabled(False)
         self.btn_pause.setEnabled(True)
-        self.btn_pause.setText("Pause")
+        self.btn_pause.setText("⏸  Pause")
         self.btn_cancel.setEnabled(True)
 
         # Launch Worker Thread
@@ -424,11 +497,11 @@ class ScanView(QWidget):
             return
         if self.worker.is_paused():
             self.worker.resume()
-            self.btn_pause.setText("Pause")
+            self.btn_pause.setText("⏸  Pause")
             self.lbl_current_file.setText("Resuming scan...")
         else:
             self.worker.pause()
-            self.btn_pause.setText("Resume")
+            self.btn_pause.setText("▶  Resume")
             self.lbl_current_file.setText("Scan paused.")
 
     def _on_cancel_scan(self) -> None:
@@ -451,7 +524,6 @@ class ScanView(QWidget):
     def _on_worker_finding(self, finding: dict) -> None:
         current_findings = int(self.card_findings.get_value()) + 1
         self.card_findings.set_value(str(current_findings))
-        # Unique files with PII tracked in scanner summary, approximate display
         if self.worker and self.worker.scanner:
             self.card_flagged.set_value(str(self.worker.scanner.files_with_pii))
 
@@ -473,7 +545,7 @@ class ScanView(QWidget):
         self.slider_threshold.setEnabled(True)
         self.slider_workers.setEnabled(True)
         self.btn_pause.setEnabled(False)
-        self.btn_pause.setText("Pause")
+        self.btn_pause.setText("⏸  Pause")
         self.btn_cancel.setEnabled(False)
 
         # Notify parent / main window
