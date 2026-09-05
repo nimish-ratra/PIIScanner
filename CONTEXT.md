@@ -37,6 +37,7 @@
 ```
 c:\PIISentinalApp\
 ├── backend/
+│   ├── classifier.py         # Microsoft Purview 5-tier sensitivity classification engine & rules
 │   ├── config.py             # User preferences & settings (%APPDATA%\PIISentinel\config.json)
 │   ├── custom_recognizers.py # Native Presidio recognizers for India PII (Verhoeff) & Secrets/Keys
 │   ├── database.py           # SQLite persistence for scan runs (%APPDATA%\PIISentinel\history.db)
@@ -49,12 +50,13 @@ c:\PIISentinalApp\
 ├── ui/
 │   ├── components/
 │   │   ├── log_viewer.py     # Real-time console widget with color-coded log levels
+│   │   ├── pii_selector_dialog.py # Dedicated lag-free modal dialogs (PiiSelector, PiiViewer, FileViewer)
 │   │   └── stat_card.py      # Metric KPI card widget with gradient border & value styling
 │   ├── views/
 │   │   ├── history_view.py   # Historical scan audit trail, past findings reloader, delete action
 │   │   ├── onboarding_dialog.py # Privacy guarantee & air-gapped confirmation modal
-│   │   ├── results_view.py   # Sortable findings table, search, filtering, extraction/quarantine dialogs
-│   │   ├── scan_view.py      # Target folder, dynamic entity chips, worker slider, progress, KPIs
+│   │   ├── results_view.py   # Sortable findings table, unmask toggle, row inspector, extraction/quarantine
+│   │   ├── scan_view.py      # Target folder, lag-free PII configuration buttons, worker slider, KPIs
 │   │   └── settings_view.py  # Preferences, extensions list, max size, worker count, Java status
 │   ├── main_window.py        # MainWindow coordinating sidebar navigation & stacked pages
 │   ├── theme.py              # Pure QSS design system (Dark & Light tokens, buttons, inputs, tables)
@@ -132,20 +134,57 @@ c:\PIISentinalApp\
 - Reports auto-generated in `%APPDATA%\PIISentinel\reports\<scan_id>\`:
   - `report.csv`
   - `report.json`
-  - `report.html` (Interactive dashboard with KPI stat cards, risk breakdown, and sortable tables).
-- SQLite history stored in `%APPDATA%\PIISentinel\history.db`.
+  - `report.html` (Interactive dashboard with KPI stat cards, risk breakdown, sortable findings table, and client-side `👁️ Reveal Full Values` unmask toggle).
+- **Full File Path Visibility**: Removed restrictive `max-width: 400px` and `text-overflow: ellipsis` in HTML report CSS so complete file locations wrap and remain 100% visible.
+- **Database Schema (`findings` table)**: Stores both `value_redacted` (privacy preview) and `value_raw` (unmasked value) with automatic schema migration, allowing instant switching between masked and raw views on historical scans.
 
-### 4.6. Enterprise UI & Dual-Theme System (`ui/theme.py`, `ui/main_window.py`, `ui/views/scan_view.py`)
+### 4.6. Enterprise UI & Lag-Free Modal Dialogs (`ui/components/pii_selector_dialog.py`, `ui/views/scan_view.py`, `ui/views/results_view.py`)
+- **Lag-Free Modal PII Configuration**:
+  - Replaced the nested 135px scroll area in `ScanView` with an active summary indicator and two dedicated buttons: `👁️ View Current PII Types` and `⚙️ Edit PII Detection Types...`.
+  - `PiiSelectorDialog`: Spacious modal dialog with instant search filtering, category tabs (India PII, Developer Secrets, Financial, Personal, Gov IDs), one-click category toggles, and bulk select/deselect operations. Eliminates all nested scroll friction on the main window.
+  - **PySide6 Signal Binding & State Sync Architecture**:
+    - In PySide6, `QCheckBox.stateChanged` emits an integer `state` (`2` or `0`) whereas `Qt.Checked` is a `CheckState` enum that fails under Python identity check (`2 == Qt.Checked` evaluates to `False`). To ensure 100% state integrity, entity checkboxes bind to `cb.toggled.connect(lambda checked, e=ent: ...)` which receives clean Python `bool` values, and category checkboxes bind to `cat_cb.clicked.connect(...)` which fires strictly on direct user interaction and never on programmatic state changes.
+    - Customized subsets (e.g. India PII only, or custom secret detectors) persist dynamically to `config_manager.selected_entities` and retain their exact subset across dialog openings without resetting to all 36.
+    - Includes empty selection validation warning (`_on_save_clicked`) to ensure at least 1 entity type remains active before applying.
+  - `PiiViewerDialog`: Read-only modal displaying all currently active entities categorized with descriptions.
+  - `FileViewerDialog`: Document explorer dialog listing all discovered files in the selected folder with instant search filtering.
+- **Unmasked Raw Values Toggle**:
+  - `ResultsView` features a prominent `👁️ Reveal Full Values` / `🔒 Mask Sensitive Values` toggle button.
+  - Switches table findings between redacted previews (`sn*********in`) and unmasked raw values (`sneha.sharma@corp.in`) with coral warning tints and full tooltips.
+  - Double-clicking any row opens `FindingDetailsDialog` displaying unclipped file paths, raw and redacted values, and file metadata with copy buttons.
+  - Split filter controls into a 2-row toolbar (Row 1: Search, Entity Filter, Min Conf, Reveal Toggle; Row 2: CSV Export, Extract Flagged Files, Quarantine) eliminating button squeezing and text clipping.
 - **Responsive Non-Squishing Layout Architecture**:
   - `ScanView` encases all components in a root `QScrollArea(setWidgetResizable=True)`, preventing layout compression bugs on lower-resolution displays and Windows DPI scaling (125%/150%).
   - `StatCard` enforces guaranteed `min-height: 82px` and `min-width: 130px` dimensions so KPI titles and values never collapse into empty slots.
-  - Dynamic entity checkboxes utilize a 2-column grid with generous spacing so entity labels are never truncated with ellipses.
 - **Dual-Theme Architecture ("Obsidian Slate" Dark & "Studio Slate" Light)**:
   - Top header bar provides an instant 1-click theme switcher (`🌙 Dark Mode` / `☀️ Light Mode`).
   - Preference is dynamically persisted in `%APPDATA%\PIISentinel\config.json` and synchronized with `SettingsView`.
-  - Color palettes adhere to high-contrast enterprise design standards (zinc/slate backgrounds, electric blue/emerald accents, crisp readable typography).
 - **Qt Mnemonic Protection**:
   - Uses `&&` in `QGroupBox` titles and `QPushButton` labels (e.g. `Results && Action`, `Engine && Concurrency Settings`) to prevent Qt mnemonic accelerator keys from hiding ampersands.
+
+### 4.7. Microsoft Purview 5-Tier Sensitivity Classification Engine (`backend/classifier.py`)
+PII Sentinel aligns with **Microsoft Purview Information Protection (MIP)** industry standards to automatically assign one of five sensitivity labels to individual findings and entire documents:
+
+| Tier Level | Microsoft Sensitivity Label | Color & Visual Badge | Criteria & Detection Mappings |
+| :---: | :--- | :--- | :--- |
+| **Level 5** | **Restricted** | `🟣 Restricted` (`#a855f7`) | Developer secrets, credentials, and API keys (`AWS_ACCESS_KEY`, `GITHUB_TOKEN`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `SLACK_TOKEN`, `PRIVATE_KEY`, `JWT_TOKEN`), OR extreme bulk exposure ($\ge 50$ PII records). |
+| **Level 4** | **Highly Confidential** | `🔴 Highly Confidential` (`#ef4444`) | National Government Identifiers (`IN_AADHAAR`, `IN_PAN`, `IN_GSTIN`, `IN_IFSC`, `IN_PASSPORT`, `IN_VOTER_ID`, `US_SSN`, `US_PASSPORT`, `UK_NHS`), Financial & Cardholder Data (`CREDIT_CARD`, `IBAN_CODE`, `CRYPTO`, `US_BANK_NUMBER`), OR bulk records ($\ge 10$ items). |
+| **Level 3** | **Confidential** | `🟠 Confidential` (`#f59e0b`) | Personal contact & identification records (`EMAIL_ADDRESS`, `PHONE_NUMBER`, `PERSON`, `LOCATION`, `DATE_TIME`, `AGE`, `IP_ADDRESS`, `URL`, `NRP`) with 1–9 instances. |
+| **Level 2** | **General** | `⚪ General` (`#94a3b8`) | Internal business documents with 0 sensitive PII items discovered. |
+| **Level 1** | **Public** | `🟢 Public` (`#22c55e`) | Unrestricted public documents with 0 sensitive PII items discovered. |
+
+- **Multi-Level Aggregation & Volume Escalation**:
+  - `classify_finding(finding)`: Maps each detected PII token to its designated Purview risk tier.
+  - `classify_document(findings)`: Evaluates all findings within a single file. Implements volume-based risk escalation: documents with $\ge 10$ contact records escalate from `Confidential` to `Highly Confidential`; documents with $\ge 50$ records escalate to `Restricted`.
+- **Database & Report Persistence**:
+  - Automatically migrates SQLite `findings` table in `%APPDATA%\PIISentinel\history.db` to include `classification TEXT`.
+  - Exports `classification` in `report.csv` and `report.json`.
+  - In `report.html`: Renders 5 Purview KPI breakdown cards, color-coded badges, and dual-filter JavaScript controls.
+- **Desktop UI Integration**:
+  - Findings table in `ResultsView` expanded to 7 columns with dedicated `Sensitivity` column displaying color-coded badges and hover tooltips explaining the exact classification rationale.
+  - Added `combo_classification` dropdown filter to toolbar (`All Classifications`, `🟣 Restricted`, `🔴 Highly Confidential`, `🟠 Confidential`, `⚪ General`, `🟢 Public`).
+  - Double-clicking any row opens `FindingDetailsDialog` displaying sensitivity tier badges and rationale rules.
+  - Scan summary card in `ScanView` highlights the highest sensitivity tier discovered upon scan completion.
 
 ---
 

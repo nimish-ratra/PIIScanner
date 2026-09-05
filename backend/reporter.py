@@ -6,9 +6,12 @@ Generates report.csv, report.json, and interactive modern HTML dashboard.
 import os
 import csv
 import json
+import html
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+
+from backend.classifier import get_tier_metadata, SensitivityTier
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,7 @@ def write_csv(findings: List[Dict[str, Any]], filepath: str) -> bool:
         os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
         with open(filepath, "w", newline="", encoding="utf-8") as f:
             fieldnames = [
-                "file", "entity", "value_redacted", "confidence",
+                "file", "entity", "classification", "value_redacted", "confidence",
                 "start", "end", "file_size_bytes", "last_modified"
             ]
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -29,6 +32,8 @@ def write_csv(findings: List[Dict[str, Any]], filepath: str) -> bool:
                 row_copy = dict(row)
                 if "value_redacted" not in row_copy and "value" in row_copy:
                     row_copy["value_redacted"] = row_copy["value"]
+                if "classification" not in row_copy:
+                    row_copy["classification"] = "Confidential"
                 writer.writerow(row_copy)
         logger.info(f"CSV report written to: {filepath}")
         return True
@@ -83,13 +88,22 @@ def write_html_dashboard(
         # Entity count aggregation
         entity_counts: Dict[str, int] = {}
         file_risk: Dict[str, int] = {}
+        file_classes: Dict[str, str] = {}
         for item in findings:
             ent = item.get("entity", "UNKNOWN")
             fl = item.get("file", "Unknown")
             entity_counts[ent] = entity_counts.get(ent, 0) + 1
             file_risk[fl] = file_risk.get(fl, 0) + 1
+            if fl not in file_classes:
+                file_classes[fl] = item.get("classification", SensitivityTier.CONFIDENTIAL.value)
 
         top_files = sorted(file_risk.items(), key=lambda x: x[1], reverse=True)[:10]
+
+        # Classification counts
+        count_restricted = sum(1 for c in file_classes.values() if c == SensitivityTier.RESTRICTED.value)
+        count_highly_conf = sum(1 for c in file_classes.values() if c == SensitivityTier.HIGHLY_CONFIDENTIAL.value)
+        count_conf = sum(1 for c in file_classes.values() if c == SensitivityTier.CONFIDENTIAL.value)
+        count_general = max(0, files_scanned - len(file_classes))
 
         # Entity table rows with percentage bar
         total_f = len(findings) if findings else 1
@@ -117,16 +131,25 @@ def write_html_dashboard(
 
         # Finding rows (up to 2000 in HTML to prevent browser bloat, with note if truncated)
         display_findings = findings[:2000]
-        finding_rows = "".join(
-            f"""<tr>
-                <td class="filepath-cell" title="{item.get('file', '')}">{os.path.basename(item.get('file', ''))}</td>
-                <td><span class="badge badge-entity">{item.get('entity', '')}</span></td>
-                <td class="mono">{item.get('value_redacted', item.get('value', ''))}</td>
+        finding_rows_list = []
+        for item in display_findings:
+            cls_tier = item.get("classification", SensitivityTier.CONFIDENTIAL.value)
+            cls_meta = get_tier_metadata(cls_tier)
+            cls_badge = cls_meta.get("badge", cls_tier)
+            cls_html_class = cls_meta.get("html_class", "badge-confidential")
+            cls_rationale = item.get("classification_rationale", "")
+
+            finding_rows_list.append(
+                f"""<tr data-classification="{html.escape(cls_tier)}">
+                <td class="filepath-cell" title="{html.escape(str(item.get('file', '')))}">{html.escape(os.path.basename(item.get('file', '')))}</td>
+                <td><span class="badge {cls_html_class}" title="{html.escape(cls_rationale)}">{cls_badge}</span></td>
+                <td><span class="badge badge-entity">{html.escape(str(item.get('entity', '')))}</span></td>
+                <td class="mono pii-value-cell" data-redacted="{html.escape(str(item.get('value_redacted', item.get('value', ''))))}" data-raw="{html.escape(str(item.get('value', item.get('value_redacted', ''))))}">{html.escape(str(item.get('value_redacted', item.get('value', ''))))}</td>
                 <td><span class="confidence-pill" style="opacity: {max(0.4, item.get('confidence', 0.5))};">{item.get('confidence', 0):.2f}</span></td>
-                <td class="filepath-sub">{item.get('file', '')}</td>
+                <td class="filepath-sub" title="{html.escape(str(item.get('file', '')))}">{html.escape(str(item.get('file', '')))}</td>
             </tr>"""
-            for item in display_findings
-        ) or "<tr><td colspan='5' class='empty'>No findings to display</td></tr>"
+            )
+        finding_rows = "".join(finding_rows_list) or "<tr><td colspan='6' class='empty'>No findings to display</td></tr>"
 
         truncation_note = ""
         if len(findings) > 2000:
@@ -198,7 +221,7 @@ def write_html_dashboard(
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 20px;
-    margin-bottom: 30px;
+    margin-bottom: 25px;
   }}
   .card {{
     background: var(--card-bg);
@@ -217,31 +240,34 @@ def write_html_dashboard(
   .card-value {{
     font-size: 34px;
     font-weight: 700;
-    margin-top: 8px;
-    color: var(--text);
+    margin-top: 6px;
   }}
-  .card-danger .card-value {{ color: #f87171; }}
-  .card-warning .card-value {{ color: #fbbf24; }}
-  .card-info .card-value {{ color: #60a5fa; }}
+  .card-info .card-value {{ color: var(--text); }}
+  .card-warning .card-value {{ color: var(--warning); }}
+  .card-danger .card-value {{ color: var(--danger); }}
 
   /* Panels Grid */
   .panels-grid {{
     display: grid;
-    grid-template-columns: 1fr 1.3fr;
+    grid-template-columns: 1fr 1fr;
     gap: 24px;
     margin-bottom: 30px;
   }}
   @media (max-width: 900px) {{
     .panels-grid {{ grid-template-columns: 1fr; }}
   }}
+  .panel {{
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 24px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+  }}
   .panel-title {{
     font-size: 18px;
-    font-weight: 600;
-    margin-bottom: 16px;
-    color: var(--text);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    font-weight: 700;
+    margin-bottom: 18px;
+    color: #e2e8f0;
   }}
 
   /* Tables */
@@ -270,21 +296,36 @@ def write_html_dashboard(
   tr:last-child td {{ border-bottom: none; }}
   tr:hover td {{ background: rgba(255, 255, 255, 0.02); }}
   .filepath-cell {{
-    max-width: 320px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     font-family: monospace;
     font-size: 13px;
+    word-break: break-all;
   }}
   .filepath-sub {{
     color: var(--text-muted);
     font-size: 12px;
-    max-width: 400px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     font-family: monospace;
+    word-break: break-all;
+    line-height: 1.4;
+  }}
+  .btn-toggle-mask {{
+    background: #1e293b;
+    color: #38bdf8;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }}
+  .btn-toggle-mask:hover {{
+    background: #334155;
+    border-color: #38bdf8;
+  }}
+  .btn-toggle-mask.active {{
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+    border-color: #ef4444;
   }}
   .mono {{
     font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
@@ -293,6 +334,13 @@ def write_html_dashboard(
     background: #0f172a;
     padding: 3px 6px;
     border-radius: 4px;
+    word-break: break-all;
+    transition: all 0.15s ease;
+  }}
+  .mono.unmasked-val {{
+    color: #fca5a5 !important;
+    background: rgba(239, 68, 68, 0.18) !important;
+    border: 1px solid rgba(239, 68, 68, 0.35);
   }}
   .badge {{
     display: inline-block;
@@ -310,6 +358,31 @@ def write_html_dashboard(
     background: var(--danger-bg);
     color: #fca5a5;
     border: 1px solid rgba(239, 68, 68, 0.3);
+  }}
+  .badge-restricted {{
+    background: rgba(168, 85, 247, 0.18);
+    color: #d8b4fe;
+    border: 1px solid rgba(168, 85, 247, 0.35);
+  }}
+  .badge-highly-confidential {{
+    background: rgba(239, 68, 68, 0.18);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+  }}
+  .badge-confidential {{
+    background: rgba(245, 158, 11, 0.18);
+    color: #fcd34d;
+    border: 1px solid rgba(245, 158, 11, 0.35);
+  }}
+  .badge-general {{
+    background: rgba(148, 163, 184, 0.18);
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+  }}
+  .badge-public {{
+    background: rgba(34, 197, 94, 0.18);
+    color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.35);
   }}
   .confidence-pill {{
     display: inline-block;
@@ -340,8 +413,7 @@ def write_html_dashboard(
     border: 1px solid var(--card-border);
     background: #0f172a;
     color: white;
-    font-size: 14px;
-    width: 250px;
+    font-size: 13px;
   }}
 </style>
 </head>
@@ -374,6 +446,43 @@ def write_html_dashboard(
     <div class="card">
       <div class="card-label">Scan Duration</div>
       <div class="card-value" style="font-size: 26px;">{scan_duration:.1f}s</div>
+    </div>
+  </div>
+
+  <!-- Microsoft Purview Sensitivity Classification Breakdown -->
+  <div style="margin-bottom: 30px;">
+    <div style="font-size: 13px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;">
+      &#128274; Microsoft Purview Sensitivity Classification (Document Breakdown)
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;">
+      <div class="card" style="border-left: 4px solid #a855f7; padding: 16px 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 13px; font-weight: 700; color: #d8b4fe;">🟣 Restricted</span>
+          <span style="font-size: 22px; font-weight: 800; color: #f8fafc;">{count_restricted} files</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 6px;">Developer credentials, API tokens & private keys</div>
+      </div>
+      <div class="card" style="border-left: 4px solid #ef4444; padding: 16px 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 13px; font-weight: 700; color: #fca5a5;">🔴 Highly Confidential</span>
+          <span style="font-size: 22px; font-weight: 800; color: #f8fafc;">{count_highly_conf} files</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 6px;">Aadhaar, PAN, Credit Cards, Bank Accounts, Bulk PII</div>
+      </div>
+      <div class="card" style="border-left: 4px solid #f59e0b; padding: 16px 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 13px; font-weight: 700; color: #fcd34d;">🟠 Confidential</span>
+          <span style="font-size: 22px; font-weight: 800; color: #f8fafc;">{count_conf} files</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 6px;">Standard personal contact identifiers (1-9 records)</div>
+      </div>
+      <div class="card" style="border-left: 4px solid #94a3b8; padding: 16px 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 13px; font-weight: 700; color: #cbd5e1;">⚪ General / Internal</span>
+          <span style="font-size: 22px; font-weight: 800; color: #f8fafc;">{count_general} files</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 6px;">Standard corporate operational content (0 PII)</div>
+      </div>
     </div>
   </div>
 
@@ -411,16 +520,27 @@ def write_html_dashboard(
   </div>
 
   <div class="panel" style="margin-bottom: 40px;">
-    <div class="panel-title">
+    <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
       <span>All Findings ({len(findings)})</span>
-      <input type="text" id="findingsFilter" class="search-box" placeholder="Filter findings..." onkeyup="filterFindings()">
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <select id="classificationFilter" class="search-box" onchange="filterFindings()" style="width: 190px;">
+          <option value="">All Classifications</option>
+          <option value="Restricted">🟣 Restricted</option>
+          <option value="Highly Confidential">🔴 Highly Confidential</option>
+          <option value="Confidential">🟠 Confidential</option>
+          <option value="General">⚪ General</option>
+        </select>
+        <button id="toggleMaskBtn" class="btn-toggle-mask" onclick="toggleMasking()" title="Toggle displaying unmasked raw PII values instead of starred previews">👁️ Reveal Full Values</button>
+        <input type="text" id="findingsFilter" class="search-box" placeholder="Filter findings or file..." onkeyup="filterFindings()" style="width: 220px;">
+      </div>
     </div>
     <table id="findingsTable">
       <thead>
         <tr>
           <th>File</th>
+          <th>Sensitivity</th>
           <th>Entity</th>
-          <th>Redacted Value</th>
+          <th id="thPiiValue">Redacted Value</th>
           <th>Confidence</th>
           <th>Full Path</th>
         </tr>
@@ -434,18 +554,49 @@ def write_html_dashboard(
 </div>
 
 <script>
+var isUnmasked = false;
+function toggleMasking() {{
+  isUnmasked = !isUnmasked;
+  var btn = document.getElementById("toggleMaskBtn");
+  var th = document.getElementById("thPiiValue");
+  var cells = document.querySelectorAll(".pii-value-cell");
+  for (var i = 0; i < cells.length; i++) {{
+    var c = cells[i];
+    if (isUnmasked) {{
+      c.textContent = c.getAttribute("data-raw");
+      c.classList.add("unmasked-val");
+    }} else {{
+      c.textContent = c.getAttribute("data-redacted");
+      c.classList.remove("unmasked-val");
+    }}
+  }}
+  if (btn) {{
+    btn.innerHTML = isUnmasked ? "🔒 Mask Sensitive Values" : "👁️ Reveal Full Values";
+    if (isUnmasked) {{
+      btn.classList.add("active");
+    }} else {{
+      btn.classList.remove("active");
+    }}
+  }}
+  if (th) {{
+    th.textContent = isUnmasked ? "Full Value (Unmasked)" : "Redacted Value";
+  }}
+}}
+
 function filterFindings() {{
-  var input = document.getElementById("findingsFilter");
-  var filter = input.value.toLowerCase();
+  var textInput = document.getElementById("findingsFilter");
+  var classSelect = document.getElementById("classificationFilter");
+  var textFilter = textInput ? textInput.value.toLowerCase() : "";
+  var classFilter = classSelect ? classSelect.value : "";
+
   var table = document.getElementById("findingsTable");
   var tr = table.getElementsByTagName("tr");
   for (var i = 1; i < tr.length; i++) {{
-    var text = tr[i].textContent || tr[i].innerText;
-    if (text.toLowerCase().indexOf(filter) > -1) {{
-      tr[i].style.display = "";
-    }} else {{
-      tr[i].style.display = "none";
-    }}
+    var rowText = tr[i].textContent || tr[i].innerText;
+    var rowClass = tr[i].getAttribute("data-classification") || "";
+    var matchText = (!textFilter) || (rowText.toLowerCase().indexOf(textFilter) > -1);
+    var matchClass = (!classFilter) || (rowClass === classFilter);
+    tr[i].style.display = (matchText && matchClass) ? "" : "none";
   }}
 }}
 </script>

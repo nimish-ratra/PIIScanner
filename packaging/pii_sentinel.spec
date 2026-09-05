@@ -33,6 +33,7 @@ hiddenimports = [
     "csv",
     "json",
     "PIL",
+    "backend.classifier",
 ]
 hiddenimports += collect_submodules("presidio_analyzer")
 hiddenimports += collect_submodules("spacy")

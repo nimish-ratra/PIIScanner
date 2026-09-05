@@ -16,6 +16,7 @@ from backend.presidio_detector import PresidioDetector, redact_value
 from backend.reporter import write_csv, write_json, write_html_dashboard
 from backend.file_ops import extract_flagged_files, quarantine_flagged_files
 from backend.scanner import Scanner
+from backend.classifier import SensitivityTier, TIER_METADATA, classify_document, classify_finding
 from tests.create_test_samples import create_test_samples
 
 
@@ -238,6 +239,99 @@ class TestBackend(unittest.TestCase):
         self.assertNotIn("3675 9832 4159", aadhaar_vals)
         print(f"[OK] India PII and Developer Secrets tests passed. Verified {len(found_types)} entities.")
 
+    def test_10_sensitivity_classification(self):
+        # 1. Test finding classification
+        f_secret = classify_finding("AWS_ACCESS_KEY")
+        self.assertEqual(f_secret["tier"], SensitivityTier.RESTRICTED.value)
+        self.assertEqual(f_secret["level"], 5)
+
+        f_aadhaar = classify_finding("IN_AADHAAR")
+        self.assertEqual(f_aadhaar["tier"], SensitivityTier.HIGHLY_CONFIDENTIAL.value)
+        self.assertEqual(f_aadhaar["level"], 4)
+
+        f_email = classify_finding("EMAIL_ADDRESS")
+        self.assertEqual(f_email["tier"], SensitivityTier.CONFIDENTIAL.value)
+        self.assertEqual(f_email["level"], 3)
+
+        f_unknown = classify_finding("UNKNOWN_CUSTOM")
+        self.assertEqual(f_unknown["tier"], SensitivityTier.GENERAL.value)
+        self.assertEqual(f_unknown["level"], 2)
+
+        # 2. Test document classification & bulk escalation
+        doc_empty = classify_document([])
+        self.assertEqual(doc_empty["tier"], SensitivityTier.GENERAL.value)
+
+        doc_single_email = classify_document([{"entity": "EMAIL_ADDRESS"}])
+        self.assertEqual(doc_single_email["tier"], SensitivityTier.CONFIDENTIAL.value)
+
+        # Bulk 15 emails -> escalates to Highly Confidential
+        doc_bulk_15 = classify_document([{"entity": "EMAIL_ADDRESS"}] * 15)
+        self.assertEqual(doc_bulk_15["tier"], SensitivityTier.HIGHLY_CONFIDENTIAL.value)
+        self.assertIn(">=10 volume threshold", doc_bulk_15["rationale"])
+
+        # Bulk 55 emails -> escalates to Restricted
+        doc_bulk_55 = classify_document([{"entity": "EMAIL_ADDRESS"}] * 55)
+        self.assertEqual(doc_bulk_55["tier"], SensitivityTier.RESTRICTED.value)
+        self.assertIn(">=50 volume threshold", doc_bulk_55["rationale"])
+
+        # Mixed secrets + email -> highest tier wins (Restricted)
+        doc_mixed = classify_document([{"entity": "EMAIL_ADDRESS"}, {"entity": "GITHUB_TOKEN"}])
+        self.assertEqual(doc_mixed["tier"], SensitivityTier.RESTRICTED.value)
+
+        # 3. Database persistence of classification column
+        db_path = self.test_dir / "test_classification.db"
+        db = DatabaseManager(db_path=db_path)
+        scan_meta = {
+            "scan_id": "class_scan_001",
+            "target_folder": str(self.samples_dir),
+            "started_at": "2026-09-05 12:00:00",
+            "completed_at": "2026-09-05 12:01:00",
+            "duration_seconds": 10.0,
+            "files_scanned": 1,
+            "files_with_pii": 1,
+            "total_findings": 1,
+            "confidence_threshold": 0.5,
+            "status": "completed"
+        }
+        test_finding = [{
+            "file": "test.txt",
+            "entity": "AWS_ACCESS_KEY",
+            "classification": "Restricted",
+            "value_redacted": "AK***LE",
+            "confidence": 0.99,
+            "start": 0,
+            "end": 20,
+            "file_size_bytes": 128,
+            "last_modified": "2026-09-05"
+        }]
+        db.insert_scan(scan_meta, test_finding)
+        loaded = db.get_findings_for_scan("class_scan_001")
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["classification"], "Restricted")
+
+        # 4. Scanner end-to-end classification
+        reports_dir = self.test_dir / "reports_class"
+        scanner = Scanner(
+            target_folder=str(self.samples_dir),
+            confidence_threshold=0.5,
+            max_workers=2,
+            reports_dir=str(reports_dir)
+        )
+        summary = scanner.run()
+        self.assertIn("highest_classification", summary)
+        self.assertIn("classification_counts", summary)
+        self.assertIn("Restricted", summary["classification_counts"])
+        self.assertIn("Highly Confidential", summary["classification_counts"])
+
+        # Check CSV contains classification column
+        csv_path = summary["report_csv"]
+        with open(csv_path, "r", encoding="utf-8") as f:
+            header_line = f.readline()
+            self.assertIn("classification", header_line)
+
+        print(f"[OK] Microsoft 5-Tier Sensitivity Classification test passed. Highest Tier: {summary['highest_classification']}")
+
 
 if __name__ == "__main__":
     unittest.main()
+

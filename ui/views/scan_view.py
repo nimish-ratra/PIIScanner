@@ -20,6 +20,9 @@ from backend.config import config_manager
 from backend.presidio_detector import PresidioDetector
 from ui.components.stat_card import StatCard
 from ui.components.log_viewer import LogViewer
+from ui.components.pii_selector_dialog import (
+    PiiSelectorDialog, PiiViewerDialog, FileViewerDialog, ENTITY_CATEGORIES
+)
 from ui.workers.scan_worker import ScanWorker
 
 
@@ -32,7 +35,10 @@ class ScanView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.worker: Optional[ScanWorker] = None
-        self.entity_checkboxes = {}
+        self.all_supported_entities: List[str] = []
+        self.selected_entities: List[str] = []
+        self._detected_file_list: List[str] = []
+        self.entity_checkboxes = {}  # Backwards compatibility
         self._init_ui()
         self._load_entities()
         self._update_folder_preview()
@@ -96,10 +102,23 @@ class ScanView(QWidget):
         input_row.addWidget(self.btn_browse)
         dir_layout.addLayout(input_row)
 
-        # Real-time folder preview & helper notice
+        # Real-time folder preview row & full file list inspector button
+        preview_row = QHBoxLayout()
         self.lbl_folder_preview = QLabel(dir_group)
         self.lbl_folder_preview.setWordWrap(True)
-        dir_layout.addWidget(self.lbl_folder_preview)
+        preview_row.addWidget(self.lbl_folder_preview, 1)
+
+        self.btn_view_all_files = QPushButton("📄 View All Files", dir_group)
+        self.btn_view_all_files.setFixedHeight(28)
+        self.btn_view_all_files.setStyleSheet(
+            "background: rgba(30, 41, 59, 0.8); color: #38bdf8; border: 1px solid #1e293b; "
+            "border-radius: 6px; padding: 2px 12px; font-size: 11px; font-weight: 600;"
+        )
+        self.btn_view_all_files.clicked.connect(self._on_view_all_files)
+        self.btn_view_all_files.setVisible(False)
+        preview_row.addWidget(self.btn_view_all_files)
+
+        dir_layout.addLayout(preview_row)
 
         main_layout.addWidget(dir_group)
         self.setAcceptDrops(True)
@@ -108,49 +127,69 @@ class ScanView(QWidget):
         config_layout = QHBoxLayout()
         config_layout.setSpacing(16)
 
-        # 3a. Left Column: Entity Selection Group
+        # 3a. Left Column: Dynamic PII Detection Types Configuration Group (Lag-Free Modal Approach)
         entity_group = QGroupBox("PII Detection Types", container)
         entity_vbox = QVBoxLayout(entity_group)
         entity_vbox.setContentsMargins(16, 14, 16, 14)
-        entity_vbox.setSpacing(10)
+        entity_vbox.setSpacing(12)
 
-        # Quick action controls
-        btn_bar = QHBoxLayout()
-        btn_bar.setSpacing(8)
-
-        self.btn_select_all_entities = QPushButton("Select All", entity_group)
-        self.btn_select_all_entities.setFixedHeight(26)
-        self.btn_select_all_entities.setStyleSheet("font-size: 11px; padding: 2px 10px;")
-        self.btn_select_all_entities.clicked.connect(self._select_all_entities)
-
-        self.btn_clear_entities = QPushButton("Deselect All", entity_group)
-        self.btn_clear_entities.setFixedHeight(26)
-        self.btn_clear_entities.setStyleSheet("font-size: 11px; padding: 2px 10px;")
-        self.btn_clear_entities.clicked.connect(self._deselect_all_entities)
-
-        self.lbl_selected_count = QLabel("All Selected", entity_group)
-        self.lbl_selected_count.setStyleSheet("font-size: 11px; color: #60a5fa; font-weight: 600;")
-
-        btn_bar.addWidget(self.btn_select_all_entities)
-        btn_bar.addWidget(self.btn_clear_entities)
-        btn_bar.addStretch()
-        btn_bar.addWidget(self.lbl_selected_count)
-        entity_vbox.addLayout(btn_bar)
-
-        # Scroll area for dynamic entities
-        self.entity_scroll = QScrollArea(entity_group)
-        self.entity_scroll.setWidgetResizable(True)
-        self.entity_scroll.setFixedHeight(135)
-        self.entity_scroll.setStyleSheet(
-            "background-color: transparent; border: 1px solid #1e2e4a; border-radius: 8px;"
+        # Active status header row
+        hdr_row = QHBoxLayout()
+        hdr_lbl = QLabel("Active Detection Configuration:", entity_group)
+        hdr_lbl.setStyleSheet("font-weight: 600; font-size: 12px; color: #e2e8f0;")
+        self.lbl_selected_count = QLabel("All 36 Types Active", entity_group)
+        self.lbl_selected_count.setStyleSheet(
+            "background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); "
+            "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px;"
         )
+        hdr_row.addWidget(hdr_lbl)
+        hdr_row.addStretch()
+        hdr_row.addWidget(self.lbl_selected_count)
+        entity_vbox.addLayout(hdr_row)
 
-        self.entity_container = QWidget()
-        self.entity_grid = QGridLayout(self.entity_container)
-        self.entity_grid.setContentsMargins(10, 8, 10, 8)
-        self.entity_grid.setSpacing(8)
-        self.entity_scroll.setWidget(self.entity_container)
-        entity_vbox.addWidget(self.entity_scroll)
+        # Categorized Summary Card
+        self.card_category_summary = QWidget(entity_group)
+        self.card_category_summary.setStyleSheet(
+            "background-color: #0d1322; border: 1px solid #1e293b; border-radius: 8px;"
+        )
+        card_layout = QVBoxLayout(self.card_category_summary)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setSpacing(6)
+
+        self.lbl_category_summary = QLabel(self.card_category_summary)
+        self.lbl_category_summary.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: 500;")
+        self.lbl_category_summary.setWordWrap(True)
+        card_layout.addWidget(self.lbl_category_summary)
+
+        note_lbl = QLabel("Zero cloud communication. All Presidio NER & Regex recognizers run locally.", self.card_category_summary)
+        note_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
+        card_layout.addWidget(note_lbl)
+
+        entity_vbox.addWidget(self.card_category_summary)
+
+        # Prominent Buttons Row: "View Current PII Types" & "Edit PII Detection Types..."
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        self.btn_view_entities = QPushButton("👁️ View Current PII Types", entity_group)
+        self.btn_view_entities.setFixedHeight(36)
+        self.btn_view_entities.setStyleSheet(
+            "background-color: #162036; color: #f1f5f9; border: 1px solid #2a3b5c; "
+            "border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600;"
+        )
+        self.btn_view_entities.clicked.connect(self._on_view_entities)
+
+        self.btn_edit_entities = QPushButton("⚙️ Edit PII Detection Types...", entity_group)
+        self.btn_edit_entities.setFixedHeight(36)
+        self.btn_edit_entities.setStyleSheet(
+            "background-color: #2563eb; color: #ffffff; border: 1px solid #3b82f6; "
+            "border-radius: 6px; padding: 6px 16px; font-size: 12px; font-weight: 700;"
+        )
+        self.btn_edit_entities.clicked.connect(self._on_edit_entities)
+
+        btn_row.addWidget(self.btn_view_entities)
+        btn_row.addWidget(self.btn_edit_entities)
+        entity_vbox.addLayout(btn_row)
 
         config_layout.addWidget(entity_group, 3)
 
@@ -302,62 +341,117 @@ class ScanView(QWidget):
         root_vbox.addWidget(scroll)
 
     def _load_entities(self) -> None:
-        """Query Presidio dynamically for supported entities and populate checkboxes."""
+        """Query Presidio dynamically for supported entities and initialize active selection."""
         try:
             detector = PresidioDetector.get_instance()
-            entities = detector.get_supported_entities()
+            self.all_supported_entities = detector.get_supported_entities()
         except Exception:
-            entities = ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "PERSON", "IP_ADDRESS", "US_SSN"]
+            self.all_supported_entities = [
+                "IN_AADHAAR", "IN_PAN", "IN_GSTIN", "IN_IFSC", "IN_PASSPORT", "IN_VOTER_ID",
+                "AWS_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY", "GOOGLE_API_KEY", "SLACK_TOKEN", "PRIVATE_KEY", "JWT_TOKEN",
+                "CREDIT_CARD", "CRYPTO", "IBAN_CODE", "US_BANK_NUMBER",
+                "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION", "DATE_TIME", "AGE", "IP_ADDRESS", "URL", "NRP", "MEDICAL_LICENSE", "US_SSN", "US_PASSPORT",
+                "US_DRIVER_LICENSE", "US_ITIN", "UK_NHS", "ES_NIF", "IT_FISCAL_CODE", "IT_DRIVER_LICENSE", "IT_PASSPORT"
+            ]
 
-        saved_entities = config_manager.selected_entities
+        self.all_supported_entities = sorted(self.all_supported_entities)
+        saved = config_manager.selected_entities
+        if saved and len(saved) > 0:
+            self.selected_entities = [e for e in saved if e in self.all_supported_entities]
+        else:
+            self.selected_entities = list(self.all_supported_entities)
 
-        row = 0
-        col = 0
-        cols_per_row = 2
-
-        for entity in sorted(entities):
-            cb = QCheckBox(entity, self.entity_container)
-            is_checked = (not saved_entities) or (entity in saved_entities)
-            cb.setChecked(is_checked)
-            cb.stateChanged.connect(self._on_entity_checkbox_changed)
-            self.entity_checkboxes[entity] = cb
-            self.entity_grid.addWidget(cb, row, col)
-
-            col += 1
-            if col >= cols_per_row:
-                col = 0
-                row += 1
+        # Backwards compatibility dummy objects for any tests accessing entity_checkboxes
+        self.entity_checkboxes = {
+            e: type("DummyCB", (), {
+                "isChecked": lambda _cb, ent=e: ent in self.selected_entities,
+                "setChecked": lambda _cb, val, ent=e: self._set_entity_checked(ent, val)
+            })()
+            for e in self.all_supported_entities
+        }
 
         self._update_selected_count_label()
+        self._update_category_summary()
 
-    def _on_entity_checkbox_changed(self) -> None:
+    def _set_entity_checked(self, entity: str, checked: bool) -> None:
+        if checked and entity not in self.selected_entities:
+            self.selected_entities.append(entity)
+        elif not checked and entity in self.selected_entities:
+            self.selected_entities.remove(entity)
         self._update_selected_count_label()
+        self._update_category_summary()
 
     def _update_selected_count_label(self) -> None:
-        total = len(self.entity_checkboxes)
-        selected = sum(1 for cb in self.entity_checkboxes.values() if cb.isChecked())
+        total = len(self.all_supported_entities)
+        selected = len(self.selected_entities)
         if selected == total:
-            self.lbl_selected_count.setText(f"All ({total}) Selected")
+            self.lbl_selected_count.setText(f"All {total} Types Active")
+            self.lbl_selected_count.setStyleSheet(
+                "background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); "
+                "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px;"
+            )
         elif selected == 0:
-            self.lbl_selected_count.setText("None Selected (Warning)")
+            self.lbl_selected_count.setText("0 Active (Warning: None)")
+            self.lbl_selected_count.setStyleSheet(
+                "background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); "
+                "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px;"
+            )
         else:
-            self.lbl_selected_count.setText(f"{selected} of {total} Selected")
+            self.lbl_selected_count.setText(f"{selected} of {total} Types Active")
+            self.lbl_selected_count.setStyleSheet(
+                "background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); "
+                "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px;"
+            )
+
+    def _update_category_summary(self) -> None:
+        active_set = set(self.selected_entities)
+        chips = []
+        for cat_name, cat_data in ENTITY_CATEGORIES.items():
+            cat_ents = [e for e, _ in cat_data["entities"] if e in self.all_supported_entities]
+            if not cat_ents:
+                continue
+            act_count = sum(1 for e in cat_ents if e in active_set)
+            chips.append(f"{cat_data['badge']}: {act_count}/{len(cat_ents)}")
+
+        self.lbl_category_summary.setText("   •   ".join(chips))
+
+    def _on_view_entities(self) -> None:
+        """Open read-only viewer displaying active PII types."""
+        dlg = PiiViewerDialog(self.selected_entities, self)
+        dlg.exec()
+
+    def _on_edit_entities(self) -> None:
+        """Open modal configuration dialog to select active entities with zero scroll lag."""
+        dlg = PiiSelectorDialog(self.all_supported_entities, self.selected_entities, self)
+        if dlg.exec():
+            self.selected_entities = dlg.get_selected_entities()
+            config_manager.selected_entities = self.selected_entities
+            self._update_selected_count_label()
+            self._update_category_summary()
 
     def _select_all_entities(self) -> None:
-        for cb in self.entity_checkboxes.values():
-            cb.setChecked(True)
+        self.selected_entities = list(self.all_supported_entities)
+        config_manager.selected_entities = self.selected_entities
         self._update_selected_count_label()
+        self._update_category_summary()
 
     def _deselect_all_entities(self) -> None:
-        for cb in self.entity_checkboxes.values():
-            cb.setChecked(False)
+        self.selected_entities = []
+        config_manager.selected_entities = []
         self._update_selected_count_label()
+        self._update_category_summary()
 
     def _get_active_entities(self) -> Optional[List[str]]:
-        selected = [ent for ent, cb in self.entity_checkboxes.items() if cb.isChecked()]
-        if len(selected) == len(self.entity_checkboxes):
-            return None  # All selected
-        return selected
+        if len(self.selected_entities) == len(self.all_supported_entities):
+            return None  # Presidio convention: None means analyze all supported entities
+        return list(self.selected_entities)
+
+    def _on_view_all_files(self) -> None:
+        """Open file explorer dialog displaying complete list of discovered files."""
+        folder = self.edit_folder.text().strip()
+        if self._detected_file_list and folder:
+            dlg = FileViewerDialog(self._detected_file_list, folder, self)
+            dlg.exec()
 
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
@@ -378,36 +472,54 @@ class ScanView(QWidget):
                 "💡 Note: Click 'Browse Directory...' or paste a target folder to scan all documents recursively."
             )
             self.lbl_folder_preview.setStyleSheet("color: #64748b; font-size: 11px;")
+            self.lbl_folder_preview.setToolTip("")
+            self.btn_view_all_files.setVisible(False)
+            self._detected_file_list = []
             return
 
-        # Enumerate matching files in folder
+        self.edit_folder.setToolTip(f"Full Target Folder Path: {folder}")
         exts = {e.lower() for e in config_manager.supported_extensions}
-        found_files = []
-        total_count = 0
+        self._detected_file_list = []
         try:
             for dirpath, _, filenames in os.walk(folder):
                 for fn in filenames:
                     ext = os.path.splitext(fn)[1].lower()
                     if ext in exts:
-                        total_count += 1
-                        if len(found_files) < 4:
-                            found_files.append(fn)
+                        rel = os.path.relpath(os.path.join(dirpath, fn), folder)
+                        self._detected_file_list.append(rel)
         except Exception:
             pass
 
+        total_count = len(self._detected_file_list)
         if total_count > 0:
-            preview_str = ", ".join(found_files)
-            if total_count > 4:
-                preview_str += f", ... (+{total_count - 4} more)"
-            self.lbl_folder_preview.setText(
-                f"✓ Detected {total_count} supported document(s) in selected folder: [{preview_str}]"
-            )
+            if total_count <= 8:
+                names = [os.path.basename(f) for f in self._detected_file_list]
+                preview_str = ", ".join(names)
+                self.lbl_folder_preview.setText(
+                    f"✓ Detected {total_count} supported document(s) in selected folder: [{preview_str}]"
+                )
+                self.btn_view_all_files.setVisible(False)
+            else:
+                first_few = [os.path.basename(f) for f in self._detected_file_list[:5]]
+                preview_str = ", ".join(first_few)
+                self.lbl_folder_preview.setText(
+                    f"✓ Detected {total_count} supported document(s) in selected folder: [{preview_str}, ...]"
+                )
+                self.btn_view_all_files.setText(f"📄 View All {total_count} Files")
+                self.btn_view_all_files.setVisible(True)
+
             self.lbl_folder_preview.setStyleSheet("color: #34d399; font-size: 12px; font-weight: 600;")
+            tooltip_files = "\n".join(self._detected_file_list[:60])
+            if total_count > 60:
+                tooltip_files += f"\n... and {total_count - 60} more files (click 'View All Files' button to inspect full list)"
+            self.lbl_folder_preview.setToolTip(f"Discovered Documents ({total_count} total):\n{tooltip_files}")
         else:
             self.lbl_folder_preview.setText(
                 "⚠️ No supported documents (.docx, .pdf, .txt, .csv, etc.) found in this folder."
             )
             self.lbl_folder_preview.setStyleSheet("color: #fbbf24; font-size: 12px;")
+            self.lbl_folder_preview.setToolTip("")
+            self.btn_view_all_files.setVisible(False)
 
     def _on_browse_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(
@@ -536,7 +648,11 @@ class ScanView(QWidget):
         self.card_flagged.set_value(str(summary.get("files_with_pii", 0)))
         self.card_findings.set_value(str(summary.get("total_findings", 0)))
         self.card_time.set_value(f"{summary.get('duration_seconds', 0):.1f}s")
-        self.lbl_current_file.setText(f"Scan finished: {summary.get('status', 'done').upper()}")
+        highest_tier = summary.get("highest_classification", "")
+        if highest_tier:
+            self.lbl_current_file.setText(f"Scan finished: {summary.get('status', 'done').upper()}  |  Highest Sensitivity: {highest_tier}")
+        else:
+            self.lbl_current_file.setText(f"Scan finished: {summary.get('status', 'done').upper()}")
 
         # Restore button states
         self.btn_start.setEnabled(True)

@@ -316,6 +316,11 @@ def redact_value(value: str) -> str:
 | `192.168.1.105` | `19********05` | Retains subnet hints while masking exact host address |
 | `secret` | `se**et` | Prevents short token identification |
 
+### Dual Unmasking Capability (Operator Controls)
+- **Default Privacy Mode:** By default, all findings across the Desktop application and the interactive HTML report are presented in masked format (`jo********om`) to maintain strict privacy during routine auditing.
+- **On-Demand Unmasking (`👁️ Reveal Full Values`):** Authorized operators can toggle the unmask button in the Results Toolbar or the HTML Report Dashboard to instantly inspect the exact plaintext string without altering disk files or re-running scans.
+- **Detailed Row Inspector:** Double-clicking any finding in the desktop application opens `FindingDetailsDialog`, showing both the full unmasked value, redacted preview, and full unabridged file location with 1-click clipboard copy buttons.
+
 ---
 
 ## 7. Adding Custom PII Recognizers
@@ -346,3 +351,67 @@ detector._analyzer.registry.add_recognizer(custom_recognizer)
 ```
 
 Once registered, `EMPLOYEE_ID` will automatically appear in the GUI's **PII Detection Types** checklist and be scanned in recursive audits.
+
+---
+
+## 8. Microsoft Purview 5-Tier Sensitivity Classification Mapping Matrix
+
+PII Sentinel automatically classifies audited documents and individual findings using **Microsoft Purview Information Protection (MIP)** taxonomy.
+
+### 8.1. Sensitivity Tiers Overview
+
+| Level | Sensitivity Tier | Visual Badge | Accent Color | Primary Scope |
+| :---: | :--- | :--- | :--- | :--- |
+| **5** | **Restricted** | `🟣 Restricted` | `#a855f7` | Catastrophic impact if leaked. Developer secrets, cloud credentials, private keys, or bulk exposures ($\ge 50$ records). |
+| **4** | **Highly Confidential** | `🔴 Highly Confidential` | `#ef4444` | Severe financial or regulatory liability. National IDs (Aadhaar, PAN, SSN), credit cards, bank accounts, or volume $\ge 10$ records. |
+| **3** | **Confidential** | `🟠 Confidential` | `#f59e0b` | Standard personally identifiable information (emails, phone numbers, individual person names). |
+| **2** | **General** | `⚪ General` | `#94a3b8` | Internal business information with 0 PII discovered. |
+| **1** | **Public** | `🟢 Public` | `#22c55e` | Unrestricted public information with 0 PII discovered. |
+
+### 8.2. Entity-to-Tier Mapping Table
+
+| Supported Entity Type | Category | Purview Sensitivity Tier | Tier Level | Default Badge |
+| :--- | :--- | :--- | :---: | :--- |
+| `AWS_ACCESS_KEY` | Developer Secrets | Restricted | 5 | `🟣 Restricted` |
+| `GITHUB_TOKEN` | Developer Secrets | Restricted | 5 | `🟣 Restricted` |
+| `OPENAI_API_KEY` | Developer Secrets | Restricted | 5 | `🟣 Restricted` |
+| `GOOGLE_API_KEY` | Developer Secrets | Restricted | 5 | `🟣 Restricted` |
+| `SLACK_TOKEN` | Developer Secrets | Restricted | 5 | `🟣 Restricted` |
+| `PRIVATE_KEY` | Developer Secrets | Restricted | 5 | `🟣 Restricted` |
+| `JWT_TOKEN` | Developer Secrets | Restricted | 5 | `🟣 Restricted` |
+| `IN_AADHAAR` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `IN_PAN` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `IN_GSTIN` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `IN_IFSC` | Financial Data | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `IN_PASSPORT` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `IN_VOTER_ID` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `US_SSN` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `US_PASSPORT` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `UK_NHS` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `CREDIT_CARD` | Financial Data | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `IBAN_CODE` | Financial Data | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `CRYPTO` | Financial Data | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `US_BANK_NUMBER` | Financial Data | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `US_ITIN` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `EMAIL_ADDRESS` | Personal Contact | Confidential | 3 | `🟠 Confidential` |
+| `PHONE_NUMBER` | Personal Contact | Confidential | 3 | `🟠 Confidential` |
+| `PERSON` | Personal Data | Confidential | 3 | `🟠 Confidential` |
+| `LOCATION` | Personal Data | Confidential | 3 | `🟠 Confidential` |
+| `DATE_TIME` | Demographic Data | Confidential | 3 | `🟠 Confidential` |
+| `AGE` | Demographic Data | Confidential | 3 | `🟠 Confidential` |
+| `IP_ADDRESS` | Network Data | Confidential | 3 | `🟠 Confidential` |
+| `MAC_ADDRESS` | Network Data | Confidential | 3 | `🟠 Confidential` |
+| `URL` | Network Data | Confidential | 3 | `🟠 Confidential` |
+| `NRP` | Demographic Data | Confidential | 3 | `🟠 Confidential` |
+| `ORGANIZATION` | Demographic Data | Confidential | 3 | `🟠 Confidential` |
+| `MEDICAL_LICENSE` | Healthcare Data | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `US_DRIVER_LICENSE` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `SG_NRIC_FIN` | National Govt IDs | Highly Confidential | 4 | `🔴 Highly Confidential` |
+| `AU_ABN` / `AU_ACN` | Business Identifiers| Highly Confidential | 4 | `🔴 Highly Confidential` |
+
+### 8.3. Volume-Based Risk Escalation Logic
+Even if individual findings are standard personal identifiers (`EMAIL_ADDRESS`, `PHONE_NUMBER`), the risk escalates non-linearly when aggregated in bulk:
+1. **$\ge 10$ Records**: A document containing 10 or more contact records escalates to **`Highly Confidential`** (Level 4), reflecting bulk customer/employee data list risk.
+2. **$\ge 50$ Records**: A document containing 50 or more records escalates to **`Restricted`** (Level 5), reflecting enterprise database dump exposure risk.
+3. **Worst-Case Precedence**: If a single developer secret is detected in a document containing 100 email addresses, the document classification resolves to **`Restricted`** (Level 5).
+

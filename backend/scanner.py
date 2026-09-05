@@ -19,6 +19,7 @@ from backend.tika_extractor import TikaExtractor
 from backend.presidio_detector import PresidioDetector
 from backend.reporter import write_csv, write_json, write_html_dashboard
 from backend.database import db_manager
+from backend.classifier import classify_document, SensitivityTier
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,15 @@ class Scanner:
             elapsed = time.time() - self.start_time
 
             if new_findings:
+                # Classify document using Microsoft Purview 5-tier classification engine
+                doc_class = classify_document(new_findings)
+                for f in new_findings:
+                    f["classification"] = doc_class["tier"]
+                    f["classification_level"] = doc_class["level"]
+                    f["classification_badge"] = doc_class["badge"]
+                    f["classification_color"] = doc_class["color"]
+                    f["classification_rationale"] = doc_class["rationale"]
+
                 self.files_with_pii += 1
                 self.flagged_files.add(filepath)
                 self.findings.extend(new_findings)
@@ -282,7 +292,29 @@ class Scanner:
 
         csv_path = str(scan_reports_dir / "report.csv")
         json_path = str(scan_reports_dir / "report.json")
-        html_path = str(scan_reports_dir / "report.html")
+        html_path = str(scan_reports_dir / "dashboard.html")
+        # Aggregate classification metrics across flagged files
+        file_classes = {}
+        for f in self.findings:
+            fl = f.get("file")
+            if fl and fl not in file_classes:
+                file_classes[fl] = f.get("classification", SensitivityTier.CONFIDENTIAL.value)
+
+        classification_counts = {
+            SensitivityTier.RESTRICTED.value: sum(1 for c in file_classes.values() if c == SensitivityTier.RESTRICTED.value),
+            SensitivityTier.HIGHLY_CONFIDENTIAL.value: sum(1 for c in file_classes.values() if c == SensitivityTier.HIGHLY_CONFIDENTIAL.value),
+            SensitivityTier.CONFIDENTIAL.value: sum(1 for c in file_classes.values() if c == SensitivityTier.CONFIDENTIAL.value),
+            SensitivityTier.GENERAL.value: max(0, self.files_scanned - len(file_classes))
+        }
+
+        if classification_counts[SensitivityTier.RESTRICTED.value] > 0:
+            highest_tier = SensitivityTier.RESTRICTED.value
+        elif classification_counts[SensitivityTier.HIGHLY_CONFIDENTIAL.value] > 0:
+            highest_tier = SensitivityTier.HIGHLY_CONFIDENTIAL.value
+        elif classification_counts[SensitivityTier.CONFIDENTIAL.value] > 0:
+            highest_tier = SensitivityTier.CONFIDENTIAL.value
+        else:
+            highest_tier = SensitivityTier.GENERAL.value
 
         scan_meta = {
             "scan_id": self.scan_id,
@@ -294,6 +326,8 @@ class Scanner:
             "files_with_pii": self.files_with_pii,
             "total_findings": len(self.findings),
             "confidence_threshold": self.confidence_threshold,
+            "classification_counts": classification_counts,
+            "highest_classification": highest_tier,
             "report_csv": csv_path,
             "report_json": json_path,
             "report_html": html_path,

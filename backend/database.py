@@ -65,6 +65,7 @@ class DatabaseManager:
                     file_path TEXT NOT NULL,
                     entity_type TEXT NOT NULL,
                     value_redacted TEXT NOT NULL,
+                    value_raw TEXT,
                     confidence REAL NOT NULL,
                     start_idx INTEGER,
                     end_idx INTEGER,
@@ -73,6 +74,20 @@ class DatabaseManager:
                     FOREIGN KEY (scan_id) REFERENCES scans (scan_id) ON DELETE CASCADE
                 )
             """)
+
+            # Schema migration: ensure value_raw and classification columns exist in existing databases
+            cursor.execute("PRAGMA table_info(findings)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if cols and "value_raw" not in cols:
+                try:
+                    cursor.execute("ALTER TABLE findings ADD COLUMN value_raw TEXT")
+                except Exception:
+                    pass
+            if cols and "classification" not in cols:
+                try:
+                    cursor.execute("ALTER TABLE findings ADD COLUMN classification TEXT")
+                except Exception:
+                    pass
 
             # Indices
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id)")
@@ -115,11 +130,13 @@ class DatabaseManager:
                     f.get("file", ""),
                     f.get("entity", ""),
                     f.get("value_redacted", f.get("value", "")),
+                    f.get("value", f.get("value_redacted", "")),
                     float(f.get("confidence", 0.0)),
                     int(f.get("start", 0)),
                     int(f.get("end", 0)),
                     int(f.get("file_size_bytes", 0)),
-                    str(f.get("last_modified", ""))
+                    str(f.get("last_modified", "")),
+                    str(f.get("classification", "Confidential"))
                 )
                 for f in findings
             ]
@@ -127,9 +144,10 @@ class DatabaseManager:
             if finding_rows:
                 cursor.executemany("""
                     INSERT INTO findings (
-                        scan_id, file_path, entity_type, value_redacted,
-                        confidence, start_idx, end_idx, file_size_bytes, last_modified
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        scan_id, file_path, entity_type, value_redacted, value_raw,
+                        confidence, start_idx, end_idx, file_size_bytes, last_modified,
+                        classification
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, finding_rows)
 
             conn.commit()
@@ -156,8 +174,10 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT file_path as file, entity_type as entity,
-                       value_redacted, confidence, start_idx as start,
-                       end_idx as end, file_size_bytes, last_modified
+                       value_redacted, COALESCE(value_raw, value_redacted) as value,
+                       confidence, start_idx as start,
+                       end_idx as end, file_size_bytes, last_modified,
+                       COALESCE(classification, 'Confidential') as classification
                 FROM findings WHERE scan_id = ?
             """, (scan_id,))
             rows = cursor.fetchall()
