@@ -25,10 +25,17 @@ Engineered with **Apache Tika** for universal document ingestion and **Microsoft
 ## ✨ Key Features
 
 - ⚡ **Concurrent Multi-Worker Engine:** Configurable worker threads (1–8 threads, default 2–4) configurable directly on the UI to scan and extract multiple documents in parallel for massive throughput gains.
+- 🛡️ **Phase 2: Real-Time Save Enforcement Layer:**
+  - **Two-Tier Enforcement Architecture:**
+    - **Tier 1 (Office True Pre-Save Block):** Microsoft Word and Excel VSTO/COM Add-in intercepting `DocumentBeforeSave`/`WorkbookBeforeSave` in memory before disk write. If flagged, sets `Cancel = true` and presents a modern dark-themed WPF `BlockDialog` with sensitivity tier badge, redacted findings, and an override escape hatch requiring an audit rationale.
+    - **Tier 2 (Generic File Watcher):** High-speed `watchdog` monitor observing Desktop, Documents, and Downloads with a 2.0s debounce window. When a file write completes, content is classified and automatically moved into an AES-256 encrypted zip archive, the plaintext original is removed, and a Windows toast notification alerts the user.
+  - **Shared Local Classification Microservice:** FastAPI running strictly on `127.0.0.1:47821` (zero external interface binding, loopback verification middleware).
+  - **Microsoft Purview 5-Tier Classification:** Classifies findings into Restricted, Highly Confidential, Confidential, General, and Public tiers with admin-configurable actions (`block`, `quarantine`, `warn`, `allow`).
+  - **Fail-Safe Mode Configuration:** Fail-Closed (maximum security default) vs Fail-Open (permissive developer workflow).
 - 🔍 **Recursive Directory Auditing:** Scan deeply nested folder structures with pause, resume, and instant cancellation controls.
 - 📄 **Broad Format Ingestion:** Seamlessly extracts text from **PDF, DOCX, DOC, XLSX, XLS, PPTX, PPT, CSV, TXT, RTF, HTML, XML, JSON, ODT, ODS**.
 - 🧠 **Microsoft Presidio & spaCy Engine:**
-  - Dynamically discovers all built-in entity recognizers at runtime (`EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `PERSON`, `IP_ADDRESS`, `US_SSN`, `IBAN_CODE`, `CRYPTO`, `DATE_TIME`, etc.).
+  - Dynamically discovers all built-in entity recognizers at runtime (`EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`, `PERSON`, `IP_ADDRESS`, `US_SSN`, `IBAN_CODE`, `CRYPTO`, `DATE_TIME`, `IN_AADHAAR`, `IN_PAN`, `AWS_KEY`, `GITHUB_TOKEN`, etc.).
   - Configurable confidence threshold slider (default `0.60`).
   - Granular entity selection with 1-click Select All / Deselect All.
 - 👁️ **Interactive Results View:**
@@ -39,10 +46,13 @@ Engineered with **Apache Tika** for universal document ingestion and **Microsoft
   - **Extract Flagged Files:** Copies files containing PII to a designated location while **strictly preserving original relative folder hierarchies**. Optional destructive move mode with double-confirmation safeguard.
   - **Encrypted Quarantine:** Bundles sensitive files into an AES-encrypted, password-protected ZIP archive (`pyzipper`), with optional opt-in to safely rename originals to `.quarantined` or delete them.
 - 📊 **Executive Reporting & Historical Audit Trail:**
+  - Dual-tab Security Audit Trail (`HistoryView`): View historical directory scans and real-time save enforcement logs.
   - Generates `report.csv`, structured `report.json`, and a standalone, interactive `report.html` executive dashboard with metric cards, risk distribution charts, and file risk rankings.
-  - Built-in SQLite history database (`%APPDATA%\PIISentinel\history.db`) to review and reopen past scans anytime.
+  - Built-in SQLite history database (`%APPDATA%\PIISentinel\history.db`) with `enforcement_events` table.
 - ⚙️ **System Health & Diagnostics:**
+  - Dual-tab Settings View: General preferences + Real-Time Enforcement Policy manager.
   - Auto-detects Java runtimes (Eclipse Adoptium Temurin, Oracle JDK/JRE, and `JAVA_HOME`).
+  - Live probe testing for the local classification microservice and Office COM Add-in registration status.
   - Optional Tesseract OCR toggle for scanned/image-based PDFs.
   - Native Dark and Light mode themes with persisted user preferences (`config.json`).
 
@@ -52,45 +62,57 @@ Engineered with **Apache Tika** for universal document ingestion and **Microsoft
 
 ```
 PIIScanner/
-├── backend/
+├── backend/                  # Core classification, detection, and database engine
+│   ├── classifier.py         # Microsoft Purview 5-tier sensitivity engine
 │   ├── config.py             # User preferences manager (%APPDATA%\PIISentinel\config.json)
-│   ├── database.py           # SQLite persistence for scan history (%APPDATA%\PIISentinel\history.db)
+│   ├── database.py           # SQLite persistence (%APPDATA%\PIISentinel\history.db)
 │   ├── tika_extractor.py     # Apache Tika parser with JVM auto-detection & fallbacks
-│   ├── presidio_detector.py  # Presidio analyzer, dynamic entity queries, text chunking & redaction
+│   ├── presidio_detector.py  # Presidio analyzer, dynamic entity queries & redaction
 │   ├── scanner.py            # Multithreaded directory walker with pause/resume/cancel
 │   ├── reporter.py           # Auto-generates CSV, JSON, and interactive HTML dashboards
-│   ├── file_ops.py           # Safe copy/move extraction (preserving paths) & quarantine zip creation
+│   ├── file_ops.py           # Safe copy/move extraction & AES-256 encrypted quarantine
 │   └── logger.py             # Rotating file logger to %APPDATA%\PIISentinel\logs\
-├── ui/
+├── service/                  # Phase 2: Shared Local Classification Microservice
+│   ├── api_server.py         # FastAPI localhost loopback service (127.0.0.1:47821)
+│   ├── enforcement_policy.py # Policy mapping (Purview Tier -> block/quarantine/warn/allow)
+│   └── service_runner.py     # Background runner with system tray icon and autostart
+├── office_addin/             # Phase 2: Microsoft Office VSTO/COM Add-in (Word & Excel)
+│   ├── ThisAddIn.cs          # IDTExtensibility2 entry point and host application detection
+│   ├── WordSaveGuard.cs      # Hooks DocumentBeforeSave event; extracts in-memory text
+│   ├── ExcelSaveGuard.cs     # Hooks WorkbookBeforeSave event; extracts in-memory text
+│   ├── ApiClient.cs          # Localhost HTTP client with fail-safe timeout
+│   ├── BlockDialog.xaml(.cs) # Modern WPF modal dialog with rationale & override escape hatch
+│   ├── PIISentinelAddin.csproj # C# .NET 4.5/4.8 project
+│   └── build_and_register.ps1# Non-admin per-user COM registration script
+├── file_watcher/             # Phase 2: Generic Filesystem Watcher
+│   ├── watcher_service.py    # watchdog directory monitor (Desktop, Documents, Downloads)
+│   ├── quarantine_bridge.py  # Automated AES-256 zip remediation & plaintext file deletion
+│   └── toast_notifier.py     # Windows toast notifications (win10toast + PowerShell XML fallback)
+├── ui/                       # PySide6 Desktop User Interface
 │   ├── main_window.py        # MainWindow with sidebar navigation and stacked layout
 │   ├── theme.py              # Modern dark & light QSS styles and color tokens
-│   ├── components/
-│   │   ├── stat_card.py      # KPI metric card widget
-│   │   └── log_viewer.py     # Real-time color-coded log stream console
 │   ├── views/
 │   │   ├── scan_view.py      # Target selection, entity chips, confidence slider, controls & progress
 │   │   ├── results_view.py   # Findings grid, filtering, extraction/quarantine dialogs, context menu
-│   │   ├── history_view.py   # Historical scan audit trail, report reopener, deletion
-│   │   ├── settings_view.py  # Extensions, file size caps, OCR toggle, Java diagnostics
-│   │   └── onboarding_dialog.py # Privacy guarantee & local-first onboarding modal
-│   └── workers/
-│       └── scan_worker.py    # QThread worker bridge connecting backend scanner to Qt signals
-├── packaging/
-│   ├── pii_sentinel.spec     # PyInstaller spec file for standalone executable
-│   ├── installer.iss         # Inno Setup script for single-file installer (.exe) with uninstaller
-│   ├── build.py              # Automated build pipeline (PyInstaller + ISCC compiler)
-│   ├── create_assets.py      # Asset generator for icons (.ico, .png)
-│   └── assets/               # Application icons and branding graphics
-├── tests/
-│   ├── test_backend.py       # Unit and integration test suite
-│   ├── test_ui.py            # Automated UI and live scan test suite
-│   └── create_test_samples.py # Test document generator
+│   │   ├── history_view.py   # Dual-tab history: Directory Scans & Real-Time Enforcement Events
+│   │   └── settings_view.py  # Dual-tab settings: General Diagnostics & Enforcement Policy
+│   └── workers/              # QThread workers
+├── packaging/                # Automated PyInstaller & Inno Setup scripts
+├── tests/                    # Comprehensive unit and integration test suite
+│   ├── test_backend.py       # Phase 1 backend unit tests
+│   ├── test_ui.py            # Phase 1 UI automation tests
+│   ├── test_enforcement_service.py # Phase 2 microservice and policy tests
+│   └── test_file_watcher.py  # Phase 2 watcher and quarantine bridge tests
 ├── main.py                   # Application entry point
 ├── requirements.txt          # Python dependencies
-├── .gitignore                # Git exclusions (build, dist, cache, logs)
-├── LICENSE                   # MIT License
+├── CONTEXT.md                # AI Agent Single Source of Truth
 └── README.md                 # Project documentation
 ```
+
+### ℹ️ Two-Tier Enforcement Model & Known Boundaries
+- **Office Documents (Word & Excel):** Uses true pre-save blocking via VSTO/COM events (`DocumentBeforeSave`/`WorkbookBeforeSave`). Text is evaluated in memory prior to disk write, enabling non-destructive `Cancel = true` cancellation.
+- **Generic Files (TXT, CSV, JSON, PDF, etc.):** Uses a detect-and-remediate model. The file watcher captures file-system modification events, classifies content immediately upon write completion, moves sensitive files into AES-256 encrypted archives, and deletes plaintext originals.
+- **Theoretical Phase 3 Escalation (Future Roadmap):** Pre-write blocking of arbitrary non-Office applications (e.g., Notepad, VS Code) requires a signed Windows Kernel Minifilter Driver (`fltmgr.sys`). Phase 2 intentionally implements the two-tier model to avoid kernel-mode driver signing requirements while maintaining zero data-at-rest exposure.
 
 ---
 
@@ -136,14 +158,24 @@ PIIScanner/
 
 ## 🧪 Testing
 
-Run backend tests:
+Run all 30 tests in the complete test suite:
 ```powershell
-python -m unittest tests/test_backend.py
+python -m unittest discover tests
 ```
 
-Run UI & integration tests:
+Or execute individual test suites:
 ```powershell
+# Phase 1: Core backend, Presidio detection, Tika extraction, multi-worker scanner
+python -m unittest tests/test_backend.py
+
+# Phase 1: PySide6 Desktop UI navigation, live scan, and entity chips
 python -m unittest tests/test_ui.py
+
+# Phase 2: Local classification microservice, policy mapping & loopback security
+python -m unittest tests/test_enforcement_service.py
+
+# Phase 2: File watcher debounce, quarantine bridge, and toast notification
+python -m unittest tests/test_file_watcher.py
 ```
 
 ---

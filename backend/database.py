@@ -89,10 +89,28 @@ class DatabaseManager:
                 except Exception:
                     pass
 
+            # Enforcement Events table (Phase 2 Real-Time Save Enforcement)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS enforcement_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    tier TEXT NOT NULL,
+                    action_taken TEXT NOT NULL,
+                    user_override INTEGER DEFAULT 0,
+                    override_reason TEXT,
+                    entity_summary TEXT,
+                    source TEXT DEFAULT 'Generic'
+                )
+            """)
+
             # Indices
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_findings_entity ON findings(entity_type)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_scans_started_at ON scans(started_at DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_timestamp ON enforcement_events(timestamp DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_tier ON enforcement_events(tier)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_action ON enforcement_events(action_taken)")
             conn.commit()
 
     def insert_scan(self, scan_data: Dict[str, Any], findings: List[Dict[str, Any]]) -> None:
@@ -198,6 +216,74 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM findings")
             cursor.execute("DELETE FROM scans")
+            conn.commit()
+
+    # ---------------------------------------------------------
+    # Real-Time Enforcement Events (Phase 2)
+    # ---------------------------------------------------------
+
+    def insert_enforcement_event(self, event_data: Dict[str, Any]) -> int:
+        """Insert a real-time enforcement event (block, quarantine, warn, allow, override)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO enforcement_events (
+                    timestamp, file_path, tier, action_taken,
+                    user_override, override_reason, entity_summary, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                event_data.get("timestamp"),
+                event_data.get("file_path", ""),
+                event_data.get("tier", "General"),
+                event_data.get("action_taken", "allow"),
+                1 if event_data.get("user_override") else 0,
+                event_data.get("override_reason", ""),
+                event_data.get("entity_summary", ""),
+                event_data.get("source", "Generic")
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_enforcement_events(
+        self,
+        limit: int = 100,
+        action: Optional[str] = None,
+        tier: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve recent enforcement events with optional action and tier filters."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT * FROM enforcement_events"
+            params = []
+            conditions = []
+            if action:
+                conditions.append("action_taken = ?")
+                params.append(action)
+            if tier:
+                conditions.append("tier = ?")
+                params.append(tier)
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += " ORDER BY timestamp DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    def delete_enforcement_event(self, event_id: int) -> bool:
+        """Delete a single enforcement event by id."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM enforcement_events WHERE id = ?", (event_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def clear_enforcement_events(self) -> None:
+        """Clear all enforcement events."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM enforcement_events")
             conn.commit()
 
 

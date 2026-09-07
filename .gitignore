@@ -67,3 +67,10 @@ report.html
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# .NET / C# build outputs
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+

@@ -257,3 +257,130 @@ python -m unittest tests/test_ui.py
    - Never commit `dist/`, `build/`, `dist_installer/`, `__pycache__`, `*.db`, or `*.log` files to Git. Keep commits strictly clean.
 6. **Always Rebuild After Modifying Core Engine for .exe Deliverables:**
    - When the user asks to see changes in the standalone `.exe`, run `python packaging/build.py` and verify both `dist/PIISentinel/PIISentinel.exe` and `dist_installer/PIISentinel_Setup_v1.0.exe` update.
+7. **Zero Emoji / Non-ASCII in Windows Console Output (`cp1252`):**
+   - Standard Windows Command Prompt (`cmd.exe`) uses the `cp1252` code page by default. Never output emoji characters (e.g. `✅`, `🛡️`, `🟢`, `•`) via `print()` from CLI tools or background runners, as Python will raise `UnicodeEncodeError: 'charmap' codec can't encode character...`. Always use standard ASCII tags (e.g. `[OK]`, `[PII Sentinel]`, `[ERROR]`).
+8. **Preserve User Configuration During Automated Testing:**
+   - Any test suite that modifies `policy_manager` or `config_manager` must back up the original user settings in `setUpClass` and restore them in `tearDownClass`. Never leave `%APPDATA%\PIISentinel\` configured with temporary test paths that break the user's active session upon test completion.
+
+---
+
+## 8. Phase 2: Real-Time Save Enforcement Layer
+
+### 8.1 Architecture & Two-Tier Enforcement Model
+
+Phase 2 adds proactive real-time protection alongside Phase 1's batch directory scanning, using a **shared local microservice** to evaluate content against Microsoft Purview's 5 sensitivity tiers.
+
+```
+                    ┌────────────────────────────────────────────────────────┐
+                    │               AIR-GAPPED CLIENT MACHINE                │
+                    │                                                        │
+                    │  ┌───────────────────────┐  ┌───────────────────────┐  │
+                    │  │ Microsoft Word/Excel  │  │ Generic File Watcher  │  │
+                    │  │ (VSTO/COM Add-In)     │  │ (Desktop, Docs, Dls)  │  │
+                    │  └──────────┬────────────┘  └───────────┬───────────┘  │
+                    │             │ In-Memory Text            │ Post-Write   │
+                    │             │ (Pre-Save)                │ File Path    │
+                    │             ▼                           ▼              │
+                    │  ┌───────────────────────────────────────────────────┐  │
+                    │  │  Shared Local Classification Service              │  │
+                    │  │  http://127.0.0.1:47821 (FastAPI Loopback-Only)   │  │
+                    │  ├───────────────────────────────────────────────────┤  │
+                    │  │  • Presidio Detector (Indian PII & Secrets)       │  │
+                    │  │  • Microsoft Purview 5-Tier Classifier            │  │
+                    │  │  • Enforcement Policy Manager                     │  │
+                    │  └──────────────────┬────────────────────────────────┘  │
+                    │                     │ Action: block / quarantine /      │
+                    │                     │         warn / allow              │
+                    │                     ▼                                   │
+                    │  ┌───────────────────────────────────────────────────┐  │
+                    │  │  Enforcement Outcomes:                            │  │
+                    │  │  • Office: Pre-Save Block (Cancel=true) + WPF UI  │  │
+                    │  │  • Watcher: AES-256 Zip Quarantine + Win Toast    │  │
+                    │  │  • Audit: SQLite enforcement_events in history.db │  │
+                    │  └───────────────────────────────────────────────────┘  │
+                    └────────────────────────────────────────────────────────┘
+```
+
+1. **Tier 1 — Office Pre-Save Block (Word & Excel):**
+   - Implemented as a C# COM/VSTO Add-In (`office_addin/`).
+   - Hooks native `Application.DocumentBeforeSave` and `Application.WorkbookBeforeSave`.
+   - Extracts text directly from the in-memory document model via Office Interop prior to writing to disk.
+   - If the local classification service recommends `block`, the event handler sets `e.Cancel = true`, preventing file writing.
+   - Displays a modern modal WPF dialog (`BlockDialog.xaml`) showing sensitivity tier, redacted findings, and an override escape hatch requiring an audit rationale.
+2. **Tier 2 — Generic Filesystem Watcher (Detect-and-Remediate):**
+   - Implemented with `watchdog` (`file_watcher/watcher_service.py`).
+   - Monitors user directories: Desktop, Documents, Downloads.
+   - Debounces rapid consecutive write events (2.0s debounce window) and waits for file handle write locks to release.
+   - Calls `POST /classify/file` on the local microservice.
+   - If the policy recommends `quarantine`, moves the file into an AES-256 encrypted zip (`file_watcher/quarantine_bridge.py`), permanently deletes the plaintext file, and displays a Windows toast notification (`file_watcher/toast_notifier.py`).
+   - **Theoretical Phase 3 Escalation:** A signed Windows Kernel Minifilter Driver (`fltmgr.sys`) would be required for pre-write blocking of generic non-Office applications (e.g. Notepad, VS Code). In Phase 2, the post-write detect-and-remediate model provides immediate coverage without kernel driver signing hurdles.
+
+### 8.2 Shared Local Classification Microservice (`service/`)
+
+- **Location:** `service/api_server.py`
+- **Host & Port:** `127.0.0.1:47821` (never binds to `0.0.0.0`).
+- **Security Middleware:** Rejects all non-loopback requests with `403 Forbidden`.
+- **Endpoints:**
+  - `GET /health` — liveness probe returning service health, timestamp, and active fail-safe mode.
+  - `POST /classify/text` — body: `{"text": string, "source_hint": string}` -> returns `{tier, level, badge, findings, recommended_action, rationale}`.
+  - `POST /classify/file` — body: `{"path": string}` -> runs Apache Tika extraction followed by Presidio + Purview classification.
+  - `POST /enforcement/log` — logs block, quarantine, warn, allow, or override events to SQLite.
+  - `GET /policy` and `POST /policy` — read/update active policy mapping.
+- **Standalone CLI Invocation:** `python -m service.api_server` directly starts the Uvicorn web service.
+- **Service Runner:** `service/service_runner.py` runs the background service with a system tray icon (`pystray`), pause/resume toggle, and Windows autostart helper (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`). Menu items include *"Open Logs Folder"* and *"View Enforcement Log"* wired directly to `%APPDATA%\PIISentinel\logs\` via `get_logs_dir()`. Output uses standard ASCII strings to ensure 100% compatibility with Windows `cp1252` console encoding.
+- **Audit Logging:** Writes rotating audit logs to `%APPDATA%\PIISentinel\logs\enforcement.log`. Raw PII is never logged; only redacted summaries are persisted.
+
+### 8.3 Enforcement Policy Mapping (`service/enforcement_policy.py`)
+
+- **Configuration Path:** `%APPDATA%\PIISentinel\enforcement_policy.json`.
+- **Monitored Folders Auto-Fallback:** `watched_folders` automatically validates paths and falls back to user directories (`Desktop`, `Documents`, `Downloads`) if previously saved paths are deleted or invalid.
+- **Default Tier Actions:**
+  - 🟣 `Restricted` -> `block`
+  - 🔴 `Highly Confidential` -> `block`
+  - 🟠 `Confidential` -> `warn`
+  - ⚪ `General` -> `allow`
+  - 🟢 `Public` -> `allow`
+- **Dual-Path Resolution (`get_action_for_tier` / `resolve_action`):**
+  - In Office documents: `quarantine` maps to `block` (pre-save block).
+  - In Generic files: `block` maps to `quarantine` (post-write remediation).
+- **Fail-Safe Mode:**
+  - `Fail-Closed` (Default / High Security): Blocks or quarantines if the microservice is unreachable, preventing accidental data leaks.
+  - `Fail-Open` (Permissive): Allows document saves without interruption if the microservice is stopped.
+
+### 8.4 Office Add-In Compilation & Per-User Registration
+
+- **Language & Framework:** C# (.NET Framework 4.5/4.8).
+- **Project & Solution:** `office_addin/PIISentinelAddin.csproj` and `PIISentinelAddin.sln`.
+- **Build Command:**
+  ```powershell
+  & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe" office_addin\PIISentinelAddin.csproj /p:Configuration=Release
+  ```
+- **Non-Admin COM Registration (`office_addin/build_and_register.ps1`):**
+  - Generates COM registration script via `RegAsm.exe office_addin\bin\Release\PIISentinel.OfficeAddin.dll /regfile:office_addin\com_reg.reg`.
+  - Replaces `HKEY_CLASSES_ROOT` with `HKEY_CURRENT_USER\Software\Classes` and imports via `reg.exe import`.
+  - Registers Office COM Add-In keys in:
+    - `HKCU\Software\Microsoft\Office\Word\Addins\PIISentinel.OfficeAddin`
+    - `HKCU\Software\Microsoft\Office\Excel\Addins\PIISentinel.OfficeAddin`
+    - `LoadBehavior = 3` (Load at startup).
+  - Works 100% without Administrator elevation.
+
+### 8.5 UI Extensions & Audit Logging
+
+- **Database Extension (`backend/database.py`):**
+  - Created `enforcement_events` table: `id`, `timestamp`, `file_path`, `tier`, `action_taken`, `user_override`, `override_reason`, `entity_summary`, `source`.
+  - Indexed by `timestamp DESC`, `tier`, and `action_taken`.
+- **History View (`ui/views/history_view.py`):**
+  - Tab 1: `📁 Directory Scans` (Phase 1 batch scan history, reload findings, HTML dashboard opener).
+  - Tab 2: `🛡️ Real-Time Enforcement Events` (filterable by Action and Sensitivity Tier, with single-event and full-log deletion).
+- **Settings View (`ui/views/settings_view.py`):**
+  - Tab 1: `⚙️ General & Scan Defaults` (confidence threshold, extensions, Tesseract/Java diagnostics, theme switcher).
+  - Tab 2: `🛡️ Real-Time Enforcement Policy` (tier action dropdowns, fail-safe mode toggle, monitored folder manager, quarantine archive path, live service probe tester, and Office add-in registration status).
+
+### 8.6 Testing Suite
+
+- `tests/test_enforcement_service.py` (9 tests): Validates policy mapping, resolve_action dual path, FastAPI endpoints (`/health`, `/classify/text`, `/classify/file`, `/enforcement/log`, `/policy`), and loopback security rejection (403).
+- `tests/test_file_watcher.py` (4 tests): Validates quarantine bridge encryption, plaintext file deletion, SQLite event logging, debouncing ignore rules, and benign file preservation.
+- Run complete test suite:
+  ```powershell
+  python -m unittest discover tests
+  ```

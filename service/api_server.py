@@ -1,0 +1,333 @@
+"""
+PII Sentinel Real-Time Enforcement Service API Server (Phase 2)
+FastAPI microservice strictly bound to 127.0.0.1 (loopback only).
+Exposes classification endpoints for Office Add-in and File Watcher.
+Reuses existing backend/presidio_detector.py, backend/classifier.py,
+backend/tika_extractor.py, and backend/database.py.
+Air-gapped & local-first.
+"""
+
+import os
+import sys
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+
+from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+# Ensure project root is in python path
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.config import get_logs_dir
+from backend.presidio_detector import PresidioDetector, redact_value
+from backend.classifier import classify_document, classify_finding, SensitivityTier
+from backend.tika_extractor import TikaExtractor
+from backend.database import db_manager
+from service.enforcement_policy import policy_manager, EnforcementAction
+
+# Set up rotating enforcement logger
+enforcement_log_dir = get_logs_dir()
+enforcement_log_dir.mkdir(parents=True, exist_ok=True)
+log_file = enforcement_log_dir / "enforcement.log"
+
+logger = logging.getLogger("pii_sentinel.enforcement")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    from logging.handlers import RotatingFileHandler
+    handler = RotatingFileHandler(str(log_file), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+
+# -------------------------------------------------------------
+# Request & Response Pydantic Schemas
+# -------------------------------------------------------------
+
+class FindingItem(BaseModel):
+    entity_type: str
+    redacted_value: str
+    confidence: float
+    start: int = 0
+    end: int = 0
+
+
+class TextClassificationRequest(BaseModel):
+    text: str = Field(..., description="Document content text extracted in memory")
+    source_hint: str = Field(default="Office", description="Origin application hint (e.g. Word, Excel, Notepad)")
+
+
+class TextClassificationResponse(BaseModel):
+    tier: str
+    level: int
+    badge: str
+    findings: List[FindingItem]
+    recommended_action: str
+    rationale: str
+    total_findings: int
+
+
+class FileClassificationRequest(BaseModel):
+    path: str = Field(..., description="Absolute path to file on disk")
+    source_hint: str = Field(default="Watcher", description="Caller identifier")
+
+
+class FileClassificationResponse(BaseModel):
+    tier: str
+    level: int
+    badge: str
+    findings: List[FindingItem]
+    recommended_action: str
+    rationale: str
+    total_findings: int
+    file_path: str
+
+
+class EnforcementLogRequest(BaseModel):
+    file_path: str
+    tier: str
+    action_taken: str
+    user_override: bool = False
+    override_reason: Optional[str] = ""
+    entity_summary: Optional[str] = ""
+    source: Optional[str] = "Office Add-in"
+
+
+# -------------------------------------------------------------
+# FastAPI App & Security Middleware
+# -------------------------------------------------------------
+
+app = FastAPI(
+    title="PII Sentinel Real-Time Enforcement API",
+    version="2.0.0",
+    description="Local classification microservice for Office add-ins and filesystem save enforcement.",
+    docs_url=None,   # Disable public OpenAPI docs in production
+    redoc_url=None
+)
+
+# CORS restricted strictly to localhost
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1", "http://localhost"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def verify_loopback_only(request: Request, call_next):
+    """
+    Security Gate: Reject any request originating from non-loopback IP addresses.
+    Guarantee 100% air-gapped local confinement.
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        logger.warning(f"Rejected non-loopback connection attempt from IP: {client_host}")
+        return Response(
+            content='{"error": "Access Denied: Non-loopback client rejected. PII Sentinel is 100% local."}',
+            status_code=status.HTTP_403_FORBIDDEN,
+            media_type="application/json"
+        )
+    return await call_next(request)
+
+
+# -------------------------------------------------------------
+# Endpoints
+# -------------------------------------------------------------
+
+@app.get("/health")
+def health():
+    """Liveness probe used by Office Add-in and File Watcher."""
+    return {
+        "status": "healthy",
+        "service": "PII Sentinel Classification Microservice",
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.0.0",
+        "port": policy_manager.api_port,
+        "fail_open": policy_manager.fail_open
+    }
+
+
+@app.post("/classify/text", response_model=TextClassificationResponse)
+def classify_text(req: TextClassificationRequest):
+    """
+    Classify in-memory text extracted from Word or Excel before disk write.
+    Returns sensitivity tier, findings list, recommended action, and rationale.
+    """
+    text = req.text
+    if not text or not text.strip():
+        return TextClassificationResponse(
+            tier=SensitivityTier.GENERAL.value,
+            level=2,
+            badge="⚪ General",
+            findings=[],
+            recommended_action=EnforcementAction.ALLOW.value,
+            rationale="Empty document or no text content detected.",
+            total_findings=0
+        )
+
+    detector = PresidioDetector.get_instance()
+    raw_findings = detector.analyze_text(text, score_threshold=0.40)
+
+    # Classify document
+    classification = classify_document(raw_findings)
+    tier = classification["tier"]
+    level = classification["level"]
+    badge = classification["badge"]
+    rationale = classification["rationale"]
+
+    # Evaluate action
+    is_office = "office" in req.source_hint.lower() or "word" in req.source_hint.lower() or "excel" in req.source_hint.lower()
+    recommended_action = policy_manager.get_action_for_tier(tier, is_office=is_office)
+
+    # Format findings with safe redacted values
+    findings_list: List[FindingItem] = []
+    entity_counts: Dict[str, int] = {}
+    for f in raw_findings:
+        ent = f.get("entity", "PII")
+        entity_counts[ent] = entity_counts.get(ent, 0) + 1
+        findings_list.append(FindingItem(
+            entity_type=ent,
+            redacted_value=f.get("value_redacted", redact_value(f.get("value", ""))),
+            confidence=float(f.get("confidence", 0.0)),
+            start=int(f.get("start", 0)),
+            end=int(f.get("end", 0))
+        ))
+
+    # Log safe summary without plaintext PII
+    summary_str = ", ".join([f"{k} ({v})" for k, v in entity_counts.items()])
+    logger.info(
+        f"Classified text from '{req.source_hint}': Tier={tier} (Level {level}) | "
+        f"Action={recommended_action} | Findings={len(findings_list)} [{summary_str}]"
+    )
+
+    return TextClassificationResponse(
+        tier=tier,
+        level=level,
+        badge=badge,
+        findings=findings_list,
+        recommended_action=recommended_action,
+        rationale=rationale,
+        total_findings=len(findings_list)
+    )
+
+
+@app.post("/classify/file", response_model=FileClassificationResponse)
+def classify_file(req: FileClassificationRequest):
+    """
+    Classify a saved file on disk (used by File Watcher).
+    Runs Tika text extraction followed by Presidio NLP + Purview classification.
+    """
+    file_path = Path(req.path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
+
+    # Extract text
+    extractor = TikaExtractor()
+    extracted_text, _ = extractor.extract_text(str(file_path))
+
+    if not extracted_text or not extracted_text.strip():
+        return FileClassificationResponse(
+            tier=SensitivityTier.GENERAL.value,
+            level=2,
+            badge="⚪ General",
+            findings=[],
+            recommended_action=EnforcementAction.ALLOW.value,
+            rationale="No parseable text extracted from document.",
+            total_findings=0,
+            file_path=str(file_path)
+        )
+
+    detector = PresidioDetector.get_instance()
+    raw_findings = detector.analyze_text(extracted_text, score_threshold=0.40)
+
+    classification = classify_document(raw_findings)
+    tier = classification["tier"]
+    level = classification["level"]
+    badge = classification["badge"]
+    rationale = classification["rationale"]
+
+    recommended_action = policy_manager.get_action_for_tier(tier, is_office=False)
+
+    findings_list: List[FindingItem] = []
+    entity_counts: Dict[str, int] = {}
+    for f in raw_findings:
+        ent = f.get("entity", "PII")
+        entity_counts[ent] = entity_counts.get(ent, 0) + 1
+        findings_list.append(FindingItem(
+            entity_type=ent,
+            redacted_value=f.get("value_redacted", redact_value(f.get("value", ""))),
+            confidence=float(f.get("confidence", 0.0)),
+            start=int(f.get("start", 0)),
+            end=int(f.get("end", 0))
+        ))
+
+    summary_str = ", ".join([f"{k} ({v})" for k, v in entity_counts.items()])
+    logger.info(
+        f"Classified file '{file_path.name}': Tier={tier} (Level {level}) | "
+        f"Action={recommended_action} | Findings={len(findings_list)} [{summary_str}]"
+    )
+
+    return FileClassificationResponse(
+        tier=tier,
+        level=level,
+        badge=badge,
+        findings=findings_list,
+        recommended_action=recommended_action,
+        rationale=rationale,
+        total_findings=len(findings_list),
+        file_path=str(file_path)
+    )
+
+
+@app.post("/enforcement/log")
+def log_enforcement_event(req: EnforcementLogRequest):
+    """
+    Log an enforcement action (block, quarantine, warn, override) to history.db.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    event_data = {
+        "timestamp": timestamp,
+        "file_path": req.file_path,
+        "tier": req.tier,
+        "action_taken": req.action_taken,
+        "user_override": 1 if req.user_override else 0,
+        "override_reason": req.override_reason or "",
+        "entity_summary": req.entity_summary or "",
+        "source": req.source or "Generic"
+    }
+
+    event_id = db_manager.insert_enforcement_event(event_data)
+    logger.info(
+        f"Enforcement Event Logged: ID={event_id} | Action={req.action_taken} | "
+        f"Tier={req.tier} | Override={req.user_override} | Source={req.source} | File={req.file_path}"
+    )
+
+    return {"success": True, "event_id": event_id, "timestamp": timestamp}
+
+
+@app.get("/policy")
+def get_policy():
+    """Retrieve active enforcement policy."""
+    return policy_manager.to_dict()
+
+
+@app.post("/policy")
+def update_policy(updates: Dict[str, Any]):
+    """Update active enforcement policy."""
+    policy_manager.update_from_dict(updates)
+    logger.info("Enforcement policy updated via API.")
+    return {"success": True, "policy": policy_manager.to_dict()}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    print(f"Starting PII Sentinel Classification Microservice on http://127.0.0.1:{policy_manager.api_port} (Loopback Only)...")
+    uvicorn.run("service.api_server:app", host="127.0.0.1", port=policy_manager.api_port, reload=False)
+

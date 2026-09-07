@@ -443,6 +443,38 @@ QCheckBox::indicator:checked {
     border-color: #38bdf8;
 }
 
+/* Tab Widget */
+QTabWidget::pane {
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    background-color: #0b0f19;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background-color: #111827;
+    color: #94a3b8;
+    border: 1px solid #1e293b;
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 10px 20px;
+    font-weight: 600;
+    margin-right: 4px;
+}
+
+QTabBar::tab:selected {
+    background-color: #0b0f19;
+    color: #38bdf8;
+    border-color: #2563eb;
+    border-bottom: 2px solid #38bdf8;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #1a2336;
+    color: #f8fafc;
+}
+
 /* Status Bar */
 QStatusBar {
     background-color: #070a12;
@@ -891,6 +923,38 @@ QCheckBox::indicator:hover {
 QCheckBox::indicator:checked {
     background-color: #2563eb;
     border-color: #1d4ed8;
+}
+
+/* Tab Widget */
+QTabWidget::pane {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background-color: #ffffff;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background-color: #f1f5f9;
+    color: #64748b;
+    border: 1px solid #e2e8f0;
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 10px 20px;
+    font-weight: 600;
+    margin-right: 4px;
+}
+
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    color: #2563eb;
+    border-color: #cbd5e1;
+    border-bottom: 2px solid #2563eb;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #e2e8f0;
+    color: #0f172a;
 }
 
 /* Status Bar */
