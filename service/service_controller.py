@@ -93,7 +93,7 @@ class ServiceController:
 
         try:
             cls._process = subprocess.Popen(
-                [python_exe, "-m", "service.service_runner", "--headless"],
+                [python_exe, "-m", "service.service_runner"],
                 cwd=str(project_root),
                 env=env,
                 creationflags=flags,

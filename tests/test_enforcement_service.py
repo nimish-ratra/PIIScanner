@@ -34,11 +34,19 @@ class TestEnforcementService(unittest.TestCase):
         cls.test_db_path = cls.temp_dir / "test_history.db"
         cls.db_manager = DatabaseManager(db_path=cls.test_db_path)
 
+        from backend.config import config_manager
+        from backend.custom_recognizers import get_all_supported_entities
+        cls._orig_rt_entities = config_manager.realtime_selected_entities
+        config_manager.realtime_selected_entities = get_all_supported_entities()
+
         # Create test client for FastAPI app
         cls.client = TestClient(app)
 
     @classmethod
     def tearDownClass(cls):
+        from backend.config import config_manager
+        if hasattr(cls, "_orig_rt_entities"):
+            config_manager.realtime_selected_entities = cls._orig_rt_entities
         if cls.temp_dir.exists():
             shutil.rmtree(str(cls.temp_dir), ignore_errors=True)
 

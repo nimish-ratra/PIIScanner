@@ -43,6 +43,7 @@ namespace PIISentinel.OfficeAddin
         private void ExcelApp_WorkbookBeforeSave(Excel.Workbook wb, bool SaveAsUI, ref bool Cancel)
         {
             if (wb == null) return;
+            if (!_apiClient.IsOfficeEnforcementEnabled()) return;
 
             string wbName = "Workbook.xlsx";
             try { wbName = wb.Name; } catch { }

@@ -43,6 +43,7 @@ namespace PIISentinel.OfficeAddin
         private void WordApp_DocumentBeforeSave(Word.Document doc, ref bool SaveAsUI, ref bool Cancel)
         {
             if (doc == null) return;
+            if (!_apiClient.IsOfficeEnforcementEnabled()) return;
 
             string docName = "Untitled.docx";
             try { docName = doc.Name; } catch { }

@@ -45,12 +45,64 @@ namespace PIISentinel.OfficeAddin
         private readonly bool _failOpen;
         private readonly JavaScriptSerializer _serializer;
 
-        public ApiClient(string baseUrl = "http://127.0.0.1:47821", int timeoutMs = 3000, bool failOpen = false)
+        public ApiClient() : this("http://127.0.0.1:47821", 2000, true)
         {
-            _baseUrl = baseUrl.TrimEnd('/');
-            _timeoutMs = timeoutMs;
+        }
+
+        public ApiClient(string baseUrl, int timeoutMs, bool failOpen)
+        {
+            _baseUrl = (baseUrl ?? "http://127.0.0.1:47821").TrimEnd('/');
+            _timeoutMs = timeoutMs > 0 ? timeoutMs : 2000;
             _failOpen = failOpen;
             _serializer = new JavaScriptSerializer();
+        }
+
+        public bool IsFailOpen()
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string policyFile = Path.Combine(appData, "PIISentinel", "enforcement_policy.json");
+                if (File.Exists(policyFile))
+                {
+                    string json = File.ReadAllText(policyFile);
+                    var dict = _serializer.Deserialize<Dictionary<string, object>>(json);
+                    if (dict != null)
+                    {
+                        if (dict.ContainsKey("enforce_office") && dict["enforce_office"] is bool)
+                        {
+                            bool enforceOffice = (bool)dict["enforce_office"];
+                            if (!enforceOffice) return true; // Office enforcement is disabled
+                        }
+                        if (dict.ContainsKey("fail_open") && dict["fail_open"] is bool)
+                        {
+                            return (bool)dict["fail_open"];
+                        }
+                    }
+                }
+            }
+            catch { }
+            return _failOpen;
+        }
+
+        public bool IsOfficeEnforcementEnabled()
+        {
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string policyFile = Path.Combine(appData, "PIISentinel", "enforcement_policy.json");
+                if (File.Exists(policyFile))
+                {
+                    string json = File.ReadAllText(policyFile);
+                    var dict = _serializer.Deserialize<Dictionary<string, object>>(json);
+                    if (dict != null && dict.ContainsKey("enforce_office") && dict["enforce_office"] is bool)
+                    {
+                        return (bool)dict["enforce_office"];
+                    }
+                }
+            }
+            catch { }
+            return true;
         }
 
         public ClassificationResult ClassifyText(string text, string sourceHint = "Microsoft Office")
@@ -58,6 +110,11 @@ namespace PIISentinel.OfficeAddin
             if (string.IsNullOrWhiteSpace(text))
             {
                 return new ClassificationResult { recommended_action = "allow", tier = "General", badge = "⚪ General" };
+            }
+
+            if (!IsOfficeEnforcementEnabled())
+            {
+                return new ClassificationResult { recommended_action = "allow", tier = "General", badge = "⚪ General (Enforcement Disabled)" };
             }
 
             try
@@ -93,13 +150,14 @@ namespace PIISentinel.OfficeAddin
             catch (Exception ex)
             {
                 // Service unreachable or timed out -> Apply fail-safe policy
-                if (_failOpen)
+                bool failOpen = IsFailOpen();
+                if (failOpen)
                 {
                     return new ClassificationResult
                     {
                         recommended_action = "allow",
                         tier = "General",
-                        badge = "⚪ General (Fail-Open)",
+                        badge = "⚪ General (Service Offline)",
                         rationale = "Service unreachable, save permitted under Fail-Open policy.",
                         is_error = true,
                         error_message = ex.Message
