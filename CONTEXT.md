@@ -348,9 +348,10 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 - **Dual-Path Resolution (`get_action_for_tier` / `resolve_action`):**
   - In Office documents: `quarantine` maps to `block` (pre-save block).
   - In Generic files: `block` maps to `quarantine` (post-write remediation).
-- **Fail-Safe Mode:**
+- **Fail-Safe Mode & Offline Resolution:**
   - `Fail-Closed` (Default / High Security): Blocks or quarantines if the microservice is unreachable, preventing accidental data leaks.
   - `Fail-Open` (Permissive): Allows document saves without interruption if the microservice is stopped.
+  - **Dynamic Client Fallback (`ApiClient.cs`):** If the microservice is stopped or unreachable during an Office save event, `ApiClient.cs` reads `%APPDATA%\PIISentinel\enforcement_policy.json` directly from disk. If `enforce_office` is disabled or `fail_safe_mode` is configured to `fail-open`, saves are immediately permitted (`allow` with `⚪ General (Service Offline)`). If configured to `fail-closed`, saves are safely blocked (`🔴 Fail-Closed Protection`) with an informative offline warning.
 
 ### 8.4 Office Add-In Compilation & Per-User Registration
 
@@ -391,6 +392,7 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
   - Implements fully idempotent `start()` and `stop()` operations with clean port verification.
   - Added `POST /service/stop` endpoint to FastAPI microservice for clean remote teardown of both the Uvicorn server and the Watchdog observer thread.
   - Top Utility Bar in `MainWindow` features a live Service Status indicator pill (`🟢 SERVICE: ACTIVE` / `🔴 SERVICE: OFFLINE`) and quick 1-click `▶ Start Service` / `⏹ Stop Service` toggle, synchronized with `LiveMonitoringView`.
+  - In-app service launches (`ServiceController.start()`) run without `--headless`, ensuring the `pystray` Windows system tray icon and context menu appear consistently whether started via the desktop application or CLI runner.
 - **Settings View (`ui/views/settings_view.py`):**
   - Tab 1: `⚙️ General & Scan Defaults` (confidence threshold, extensions, Tesseract/Java diagnostics, theme switcher).
   - Tab 2: `🛡️ Real-Time Enforcement Policy` (scoped real-time entity selection with View/Edit modal, tier action dropdowns, fail-safe mode toggle, monitored folder manager, quarantine archive path, live service probe tester, and Office add-in registration status).
