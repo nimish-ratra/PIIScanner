@@ -369,6 +369,15 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 - **Database Extension (`backend/database.py`):**
   - Created `enforcement_events` table: `id`, `timestamp`, `file_path`, `tier`, `action_taken`, `user_override`, `override_reason`, `entity_summary`, `source`.
   - Indexed by `timestamp DESC`, `tier`, and `action_taken`.
+- **Live Monitoring View (`ui/views/live_monitoring_view.py`):**
+  - Dedicated real-time monitoring view embedded as Nav Tab 4 in `MainWindow`.
+  - 1-Click GUI controls to Start, Stop, and Probe the background protection service.
+  - 4 Real-time KPI Cards: Office Pre-Save Guard status, Filesystem Watcher monitored folders count, Enforcement Policy mode (Fail-Closed/Fail-Open), and Total Interceptions recorded.
+  - Auto-refreshing live stream of intercepted saves, pre-save blocks, quarantines, warnings, and user override audit rationales.
+  - Interactive test probe button sending mock pre-save classification payloads with millisecond response latency timing.
+- **Service Controller (`service/service_controller.py`):**
+  - Central programmatic lifecycle manager (`is_running`, `start`, `stop`, `get_health`, `test_pre_save_probe`).
+  - Enables launching the headless background service directly from the GUI as well as retaining full standalone CLI capability (`python -m service.service_runner --headless`).
 - **History View (`ui/views/history_view.py`):**
   - Tab 1: `📁 Directory Scans` (Phase 1 batch scan history, reload findings, HTML dashboard opener).
   - Tab 2: `🛡️ Real-Time Enforcement Events` (filterable by Action and Sensitivity Tier, with single-event and full-log deletion).

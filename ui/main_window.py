@@ -1,7 +1,7 @@
 """
-Main Application Window for PII Sentinel
+PII Sentinel - Main Window Controller
 Coordinates enterprise sidebar navigation, top header bar with 1-click theme switching,
-stacked views (Scan, Results, History, Settings), and inter-view workflows.
+stacked views (Scan, Results, History, Live Monitoring, Settings), and inter-view workflows.
 """
 
 from pathlib import Path
@@ -9,8 +9,8 @@ from typing import Dict, Any, List
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QPushButton, QLabel, QStackedWidget, QStatusBar,
-    QButtonGroup, QFrame
+    QStackedWidget, QPushButton, QLabel, QFrame,
+    QStatusBar, QButtonGroup
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
@@ -21,12 +21,13 @@ from ui.theme import get_theme_qss
 from ui.views.scan_view import ScanView
 from ui.views.results_view import ResultsView
 from ui.views.history_view import HistoryView
+from ui.views.live_monitoring_view import LiveMonitoringView
 from ui.views.settings_view import SettingsView
 from ui.views.onboarding_dialog import OnboardingDialog
 
 
 class MainWindow(QMainWindow):
-    """Main desktop application window for PII Sentinel."""
+    """Primary application frame hosting the sidebar navigation and view stack."""
 
     def __init__(self):
         super().__init__()
@@ -59,7 +60,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.setSpacing(4)
 
         # Brand Header
-        lbl_brand = QLabel("🛡️ PII SENTINEL", sidebar)
+        lbl_brand = QLabel("🛡️  PII SENTINEL", sidebar)
         lbl_brand.setObjectName("sidebarTitle")
         lbl_brand_sub = QLabel("Enterprise Privacy & Audit Suite", sidebar)
         lbl_brand_sub.setObjectName("sidebarSubtitle")
@@ -83,11 +84,13 @@ class MainWindow(QMainWindow):
         self.btn_nav_scan = self._create_nav_button("🔍  Scan Directory", 0)
         self.btn_nav_results = self._create_nav_button("📊  Results && Action", 1)
         self.btn_nav_history = self._create_nav_button("🕒  Scan History", 2)
-        self.btn_nav_settings = self._create_nav_button("⚙️  Settings && Health", 3)
+        self.btn_nav_live = self._create_nav_button("🛡️  Live Monitoring", 3)
+        self.btn_nav_settings = self._create_nav_button("⚙️  Settings && Health", 4)
 
         sidebar_layout.addWidget(self.btn_nav_scan)
         sidebar_layout.addWidget(self.btn_nav_results)
         sidebar_layout.addWidget(self.btn_nav_history)
+        sidebar_layout.addWidget(self.btn_nav_live)
         sidebar_layout.addWidget(self.btn_nav_settings)
         sidebar_layout.addStretch()
 
@@ -96,14 +99,23 @@ class MainWindow(QMainWindow):
         sidebar_footer.setObjectName("sidebarFooter")
         footer_layout = QVBoxLayout(sidebar_footer)
         footer_layout.setContentsMargins(14, 12, 14, 12)
-        footer_layout.setSpacing(8)
+        footer_layout.setSpacing(6)
 
         # Java & Presidio Status
         java_status = check_java_status()
         jvm_text = "JVM Connected" if java_status.get("available") else "Java Missing"
         self.lbl_jvm = QLabel(f"• {jvm_text}", sidebar_footer)
-        self.lbl_jvm.setStyleSheet("font-size: 11px; color: #34d399; font-weight: 600;" if java_status.get("available") else "font-size: 11px; color: #f87171; font-weight: 600;")
+        self.lbl_jvm.setStyleSheet(
+            "font-size: 11px; color: #34d399; font-weight: 600;"
+            if java_status.get("available")
+            else "font-size: 11px; color: #f87171; font-weight: 600;"
+        )
         footer_layout.addWidget(self.lbl_jvm)
+
+        # Real-time SaveGuard Status
+        self.lbl_live_status = QLabel("• SaveGuard: Checking...", sidebar_footer)
+        self.lbl_live_status.setStyleSheet("font-size: 11px; color: #94a3b8; font-weight: 600;")
+        footer_layout.addWidget(self.lbl_live_status)
 
         btn_about = QPushButton("Privacy && Help", sidebar_footer)
         btn_about.setFixedHeight(30)
@@ -147,12 +159,14 @@ class MainWindow(QMainWindow):
         self.view_scan = ScanView(self)
         self.view_results = ResultsView(self)
         self.view_history = HistoryView(self)
+        self.view_live = LiveMonitoringView(self)
         self.view_settings = SettingsView(self)
 
         self.stack.addWidget(self.view_scan)       # Index 0
         self.stack.addWidget(self.view_results)    # Index 1
         self.stack.addWidget(self.view_history)    # Index 2
-        self.stack.addWidget(self.view_settings)   # Index 3
+        self.stack.addWidget(self.view_live)       # Index 3
+        self.stack.addWidget(self.view_settings)   # Index 4
 
         content_layout.addWidget(self.stack, 1)
         root_layout.addWidget(content_container, 1)
@@ -160,7 +174,7 @@ class MainWindow(QMainWindow):
         # 3. Status Bar
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Ready - All document parsing and NLP detection runs 100% locally on host CPU/JVM.")
+        self.status_bar.showMessage("Ready - All document parsing, pre-save interception, and NLP detection run 100% locally.")
 
         # Default to Scan Tab
         self.btn_nav_scan.setChecked(True)
@@ -177,6 +191,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         if index == 2:
             self.view_history.refresh_history()
+        elif index == 3:
+            self.view_live.refresh_events()
 
     def _wire_signals(self) -> None:
         # When scan completes, feed results into ResultsView and switch to Results tab
@@ -185,8 +201,20 @@ class MainWindow(QMainWindow):
         # When a historical scan is selected, load into ResultsView and switch tab
         self.view_history.load_scan_signal.connect(self._on_load_history_scan)
 
+        # Live monitoring status updates sidebar footer indicator
+        self.view_live.status_changed_signal.connect(self._on_live_status_changed)
+        self._on_live_status_changed(self.view_live.is_active())
+
         # When theme is toggled in settings, update stylesheet
         self.view_settings.theme_changed_signal.connect(self._apply_theme)
+
+    def _on_live_status_changed(self, is_active: bool) -> None:
+        if is_active:
+            self.lbl_live_status.setText("• SaveGuard: Active")
+            self.lbl_live_status.setStyleSheet("font-size: 11px; color: #34d399; font-weight: 600;")
+        else:
+            self.lbl_live_status.setText("• SaveGuard: Offline")
+            self.lbl_live_status.setStyleSheet("font-size: 11px; color: #f87171; font-weight: 600;")
 
     def _toggle_theme(self) -> None:
         """Instant 1-click toggle between Dark and Light mode."""
