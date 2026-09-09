@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSlider, QProgressBar, QFileDialog, QGroupBox,
     QCheckBox, QScrollArea, QGridLayout, QFrame, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread
 
 from backend.config import config_manager
 from backend.presidio_detector import PresidioDetector
@@ -26,6 +26,38 @@ from ui.components.pii_selector_dialog import (
 from ui.workers.scan_worker import ScanWorker
 
 
+class FolderPreviewWorker(QThread):
+    """Asynchronously counts and discovers supported files in target directory without GUI hitching."""
+    preview_ready = Signal(str, list, int)
+
+    def __init__(self, folder: str, supported_extensions: list, parent=None):
+        super().__init__(parent)
+        self.folder = folder
+        self.supported_extensions = set(e.lower() for e in supported_extensions)
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+
+    def run(self):
+        detected = []
+        try:
+            for dirpath, _, filenames in os.walk(self.folder):
+                if self._is_cancelled:
+                    return
+                for fn in filenames:
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext in self.supported_extensions:
+                        rel = os.path.relpath(os.path.join(dirpath, fn), self.folder)
+                        detected.append(rel)
+                        if len(detected) >= 8000:
+                            break
+        except Exception:
+            pass
+        if not self._is_cancelled:
+            self.preview_ready.emit(self.folder, detected, len(detected))
+
+
 class ScanView(QWidget):
     """Main scanning interface."""
 
@@ -35,6 +67,7 @@ class ScanView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.worker: Optional[ScanWorker] = None
+        self._preview_worker: Optional[FolderPreviewWorker] = None
         self.all_supported_entities: List[str] = []
         self.selected_entities: List[str] = []
         self._detected_file_list: List[str] = []
@@ -55,6 +88,7 @@ class ScanView(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.viewport().setAttribute(Qt.WA_OpaquePaintEvent, False)
 
         container = QWidget()
         main_layout = QVBoxLayout(container)
@@ -470,6 +504,8 @@ class ScanView(QWidget):
     def _update_folder_preview(self) -> None:
         folder = self.edit_folder.text().strip()
         if not folder or not os.path.isdir(folder):
+            if self._preview_worker and self._preview_worker.isRunning():
+                self._preview_worker.cancel()
             self.lbl_folder_preview.setText(
                 "💡 Note: Click 'Browse Directory...' or paste a target folder to scan all documents recursively."
             )
@@ -480,29 +516,31 @@ class ScanView(QWidget):
             return
 
         self.edit_folder.setToolTip(f"Full Target Folder Path: {folder}")
-        exts = {e.lower() for e in config_manager.supported_extensions}
-        self._detected_file_list = []
-        try:
-            for dirpath, _, filenames in os.walk(folder):
-                for fn in filenames:
-                    ext = os.path.splitext(fn)[1].lower()
-                    if ext in exts:
-                        rel = os.path.relpath(os.path.join(dirpath, fn), folder)
-                        self._detected_file_list.append(rel)
-        except Exception:
-            pass
+        self.lbl_folder_preview.setText(f"📁 Discovering supported documents in {os.path.basename(folder)}...")
+        self.lbl_folder_preview.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 600;")
 
-        total_count = len(self._detected_file_list)
+        if self._preview_worker and self._preview_worker.isRunning():
+            self._preview_worker.cancel()
+
+        self._preview_worker = FolderPreviewWorker(folder, config_manager.supported_extensions, self)
+        self._preview_worker.preview_ready.connect(self._on_preview_ready)
+        self._preview_worker.start()
+
+    def _on_preview_ready(self, folder: str, detected: List[str], total_count: int) -> None:
+        if self.edit_folder.text().strip() != folder:
+            return  # Path changed while worker was running
+
+        self._detected_file_list = detected
         if total_count > 0:
             if total_count <= 8:
-                names = [os.path.basename(f) for f in self._detected_file_list]
+                names = [os.path.basename(f) for f in detected]
                 preview_str = ", ".join(names)
                 self.lbl_folder_preview.setText(
                     f"✓ Detected {total_count} supported document(s) in selected folder: [{preview_str}]"
                 )
                 self.btn_view_all_files.setVisible(False)
             else:
-                first_few = [os.path.basename(f) for f in self._detected_file_list[:5]]
+                first_few = [os.path.basename(f) for f in detected[:5]]
                 preview_str = ", ".join(first_few)
                 self.lbl_folder_preview.setText(
                     f"✓ Detected {total_count} supported document(s) in selected folder: [{preview_str}, ...]"
@@ -511,7 +549,7 @@ class ScanView(QWidget):
                 self.btn_view_all_files.setVisible(True)
 
             self.lbl_folder_preview.setStyleSheet("color: #34d399; font-size: 12px; font-weight: 600;")
-            tooltip_files = "\n".join(self._detected_file_list[:60])
+            tooltip_files = "\n".join(detected[:60])
             if total_count > 60:
                 tooltip_files += f"\n... and {total_count - 60} more files (click 'View All Files' button to inspect full list)"
             self.lbl_folder_preview.setToolTip(f"Discovered Documents ({total_count} total):\n{tooltip_files}")

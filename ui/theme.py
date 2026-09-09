@@ -119,6 +119,63 @@ QScrollArea > QWidget > QWidget {
     background: transparent;
 }
 
+/* Scrollbars - Modern Hardware-Accelerated Sleek Style */
+QScrollBar:vertical {
+    border: none;
+    background-color: #070a12;
+    width: 10px;
+    margin: 0px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical {
+    background-color: #1e293b;
+    min-height: 28px;
+    border-radius: 5px;
+    margin: 1px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #38bdf8;
+}
+QScrollBar::handle:vertical:pressed {
+    background-color: #0284c7;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    border: none;
+    background: none;
+    height: 0px;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background-color: #070a12;
+    height: 10px;
+    margin: 0px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal {
+    background-color: #1e293b;
+    min-width: 28px;
+    border-radius: 5px;
+    margin: 1px;
+}
+QScrollBar::handle:horizontal:hover {
+    background-color: #38bdf8;
+}
+QScrollBar::handle:horizontal:pressed {
+    background-color: #0284c7;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    border: none;
+    background: none;
+    width: 0px;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: none;
+}
+
 /* Cards and Panels */
 .card, QGroupBox {
     background-color: #0f172a;
@@ -597,6 +654,63 @@ QScrollArea {
 
 QScrollArea > QWidget > QWidget {
     background: transparent;
+}
+
+/* Scrollbars - Studio Slate Light Theme */
+QScrollBar:vertical {
+    border: none;
+    background-color: #f1f5f9;
+    width: 10px;
+    margin: 0px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical {
+    background-color: #cbd5e1;
+    min-height: 28px;
+    border-radius: 5px;
+    margin: 1px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #2563eb;
+}
+QScrollBar::handle:vertical:pressed {
+    background-color: #1d4ed8;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    border: none;
+    background: none;
+    height: 0px;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background-color: #f1f5f9;
+    height: 10px;
+    margin: 0px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal {
+    background-color: #cbd5e1;
+    min-width: 28px;
+    border-radius: 5px;
+    margin: 1px;
+}
+QScrollBar::handle:horizontal:hover {
+    background-color: #2563eb;
+}
+QScrollBar::handle:horizontal:pressed {
+    background-color: #1d4ed8;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    border: none;
+    background: none;
+    width: 0px;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: none;
 }
 
 /* Cards and Panels */

@@ -26,12 +26,26 @@ class ServiceController:
     _process: Optional[subprocess.Popen] = None
 
     @classmethod
+    def is_port_listening(cls, port: int = DEFAULT_PORT) -> bool:
+        """Fast non-blocking check (timeout 0.03s) if 127.0.0.1:{port} has an active listener."""
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.03)
+                return s.connect_ex(("127.0.0.1", port)) == 0
+        except Exception:
+            return False
+
+    @classmethod
     def get_health(cls, port: int = DEFAULT_PORT) -> Dict[str, Any]:
-        """Probe the service /health endpoint on 127.0.0.1."""
+        """Probe the service /health endpoint on 127.0.0.1 with fast pre-check."""
+        if not cls.is_port_listening(port):
+            return {"running": False, "data": {}}
+
         url = f"http://127.0.0.1:{port}/health"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "PIISentinel-Controller"})
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
+            with urllib.request.urlopen(req, timeout=0.3) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
                     return {"running": True, "data": data}

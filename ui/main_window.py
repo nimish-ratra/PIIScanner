@@ -208,7 +208,11 @@ class MainWindow(QMainWindow):
         if index == 2:
             self.view_history.refresh_history()
         elif index == 3:
+            self.view_live.poll_timer.setInterval(2500)
             self.view_live.refresh_events()
+        else:
+            # Relax polling to 6000ms when user is working on Scan, Results, or Settings
+            self.view_live.poll_timer.setInterval(6000)
 
     def _wire_signals(self) -> None:
         # When scan completes, feed results into ResultsView and switch to Results tab
@@ -319,3 +323,19 @@ class MainWindow(QMainWindow):
     def _show_onboarding(self) -> None:
         dlg = OnboardingDialog(self)
         dlg.exec()
+
+    def closeEvent(self, event) -> None:
+        """Cleanly terminate any running UI workers upon application exit."""
+        try:
+            if hasattr(self, "view_live") and self.view_live:
+                if hasattr(self.view_live, "poll_timer") and self.view_live.poll_timer:
+                    self.view_live.poll_timer.stop()
+                if getattr(self.view_live, "_status_worker", None) and self.view_live._status_worker.isRunning():
+                    self.view_live._status_worker.wait(500)
+            if hasattr(self, "view_scan") and self.view_scan:
+                if getattr(self.view_scan, "_preview_worker", None) and self.view_scan._preview_worker.isRunning():
+                    self.view_scan._preview_worker.cancel()
+                    self.view_scan._preview_worker.wait(500)
+        except Exception:
+            pass
+        super().closeEvent(event)

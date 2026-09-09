@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QCheckBox, QFrame, QMessageBox
 )
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QThread
 from PySide6.QtGui import QColor
 
 from backend.config import config_manager
@@ -26,6 +26,33 @@ from ui.components.pii_selector_dialog import PiiSelectorDialog
 from ui.components.enforcement_details_dialog import EnforcementEventDetailsDialog, get_source_icon
 
 
+class LiveStatusWorker(QThread):
+    """Background worker probing loopback microservice health and reading SQLite audit events."""
+    status_checked = Signal(bool, dict)
+    events_fetched = Signal(list)
+
+    def __init__(self, port: int, fetch_events: bool = False, action_filter: Optional[str] = None, tier_filter: Optional[str] = None, parent=None):
+        super().__init__(parent)
+        self.port = port
+        self.fetch_events = fetch_events
+        self.action_filter = action_filter
+        self.tier_filter = tier_filter
+
+    def run(self):
+        health = ServiceController.get_health(self.port)
+        running = health.get("running", False)
+        self.status_checked.emit(running, health.get("data", {}))
+
+        if self.fetch_events:
+            try:
+                events = db_manager.get_enforcement_events(
+                    limit=300, action=self.action_filter, tier=self.tier_filter
+                )
+            except Exception:
+                events = []
+            self.events_fetched.emit(events)
+
+
 class LiveMonitoringView(QWidget):
     """Real-time monitoring and management dashboard for save enforcement."""
 
@@ -35,16 +62,17 @@ class LiveMonitoringView(QWidget):
         super().__init__(parent)
         self.enforcement_events: List[Dict[str, Any]] = []
         self._is_service_active: bool = False
+        self._status_worker: Optional[LiveStatusWorker] = None
+        self._last_event_signature: Any = None
         self._init_ui()
 
-        # Timer for polling service status and auto-refreshing live event stream
+        # Non-blocking timer for polling service status and auto-refreshing live event stream
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self._on_poll_tick)
-        self.poll_timer.start(2000)
+        self.poll_timer.start(2500)
 
-        # Initial checks
-        self._check_service_status()
-        self.refresh_events()
+        # Initial non-blocking check
+        self._trigger_async_check(fetch_events=True)
 
     def is_active(self) -> bool:
         """Return True if background service is currently alive."""
@@ -317,14 +345,41 @@ class LiveMonitoringView(QWidget):
                 pass
 
     def _on_poll_tick(self) -> None:
-        """Periodic background tick: checks service health and refreshes table."""
-        self._check_service_status()
-        if self.chk_autorefresh.isChecked():
-            self.refresh_events()
+        """Periodic background tick: checks service health and refreshes table without UI freezing."""
+        fetch_events = self.isVisible() and self.chk_autorefresh.isChecked()
+        self._trigger_async_check(fetch_events=fetch_events)
+
+    def _trigger_async_check(self, fetch_events: bool = False) -> None:
+        """Dispatch non-blocking background check."""
+        if self._status_worker and self._status_worker.isRunning():
+            return  # Previous worker in flight, skip to avoid queue buildup
+
+        action_filter = self.combo_action.currentText()
+        if action_filter == "All Actions":
+            action_filter = None
+
+        tier_filter = self.combo_tier.currentText()
+        if tier_filter == "All Tiers":
+            tier_filter = None
+
+        self._status_worker = LiveStatusWorker(
+            port=policy_manager.api_port,
+            fetch_events=fetch_events,
+            action_filter=action_filter,
+            tier_filter=tier_filter,
+            parent=self
+        )
+        self._status_worker.status_checked.connect(self._apply_service_status)
+        if fetch_events:
+            self._status_worker.events_fetched.connect(self._apply_fetched_events)
+        self._status_worker.start()
 
     def _check_service_status(self) -> None:
-        """Probe local microservice and update UI indicators."""
-        running = ServiceController.is_running(policy_manager.api_port)
+        """Trigger an asynchronous check of the background service status."""
+        self._trigger_async_check(fetch_events=False)
+
+    def _apply_service_status(self, running: bool, data: Dict[str, Any]) -> None:
+        """Update UI indicators with results from background probe (runs on GUI thread)."""
         self._is_service_active = running
 
         if running:
@@ -407,102 +462,102 @@ class LiveMonitoringView(QWidget):
             )
 
     def refresh_events(self) -> None:
-        """Reload events from SQLite history database."""
-        action_filter = self.combo_action.currentText()
-        if action_filter == "All Actions":
-            action_filter = None
+        """Trigger an immediate asynchronous refresh of events."""
+        self._last_event_signature = None  # Invalidate signature to force repaint on explicit refresh
+        self._trigger_async_check(fetch_events=True)
 
-        tier_filter = self.combo_tier.currentText()
-        if tier_filter == "All Tiers":
-            tier_filter = None
+    def _apply_fetched_events(self, events: List[Dict[str, Any]]) -> None:
+        """Update live interception table using smart diffing to eliminate UI lag."""
+        sig = (len(events), events[0].get("id") if events else None)
+        if sig == self._last_event_signature and len(events) == self.table.rowCount():
+            return  # No changes detected, skip expensive rebuild
 
-        try:
-            self.enforcement_events = db_manager.get_enforcement_events(
-                limit=300, action=action_filter, tier=tier_filter
-            )
-        except Exception:
-            self.enforcement_events = []
-
+        self._last_event_signature = sig
+        self.enforcement_events = events
         self.card_interceptions.lbl_val.setText(str(len(self.enforcement_events)))
 
-        self.table.setRowCount(len(self.enforcement_events))
-        for row_idx, ev in enumerate(self.enforcement_events):
-            # 0. Timestamp
-            item_ts = QTableWidgetItem(str(ev.get("timestamp", "")))
-            item_ts.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_idx, 0, item_ts)
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table.setRowCount(len(self.enforcement_events))
+            for row_idx, ev in enumerate(self.enforcement_events):
+                # 0. Timestamp
+                item_ts = QTableWidgetItem(str(ev.get("timestamp", "")))
+                item_ts.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row_idx, 0, item_ts)
 
-            # 1. File / Document
-            fpath = str(ev.get("file_path", ""))
-            fname = Path(fpath).name if fpath else "Unknown Document"
-            item_file = QTableWidgetItem(fname)
-            item_file.setToolTip(fpath)
-            self.table.setItem(row_idx, 1, item_file)
+                # 1. File / Document
+                fpath = str(ev.get("file_path", ""))
+                fname = Path(fpath).name if fpath else "Unknown Document"
+                item_file = QTableWidgetItem(fname)
+                item_file.setToolTip(fpath)
+                self.table.setItem(row_idx, 1, item_file)
 
-            # 2. Source App with icon
-            src = ev.get("app_source") or ev.get("source", "Generic")
-            item_src = QTableWidgetItem(get_source_icon(src))
-            item_src.setTextAlignment(Qt.AlignCenter)
-            item_src.setToolTip(f"Source: {src}")
-            self.table.setItem(row_idx, 2, item_src)
+                # 2. Source App with icon
+                src = ev.get("app_source") or ev.get("source", "Generic")
+                item_src = QTableWidgetItem(get_source_icon(src))
+                item_src.setTextAlignment(Qt.AlignCenter)
+                item_src.setToolTip(f"Source: {src}")
+                self.table.setItem(row_idx, 2, item_src)
 
-            # 3. Sensitivity Tier
-            tier_name = str(ev.get("tier", "General"))
-            meta = get_tier_metadata(tier_name)
-            item_tier = QTableWidgetItem(str(meta.get("badge", tier_name)))
-            item_tier.setTextAlignment(Qt.AlignCenter)
-            item_tier.setForeground(QColor(meta.get("color", "#94a3b8")))
-            self.table.setItem(row_idx, 3, item_tier)
+                # 3. Sensitivity Tier
+                tier_name = str(ev.get("tier", "General"))
+                meta = get_tier_metadata(tier_name)
+                item_tier = QTableWidgetItem(str(meta.get("badge", tier_name)))
+                item_tier.setTextAlignment(Qt.AlignCenter)
+                item_tier.setForeground(QColor(meta.get("color", "#94a3b8")))
+                self.table.setItem(row_idx, 3, item_tier)
 
-            # 4. Detected Types
-            raw_types = ev.get("detection_types") or ""
-            if not raw_types:
-                summary = ev.get("entity_summary", "")
-                if summary:
-                    parts = [p.split(":")[0].strip() for p in summary.split(",") if p.strip()]
-                    raw_types = ", ".join(parts)
+                # 4. Detected Types
+                raw_types = ev.get("detection_types") or ""
+                if not raw_types:
+                    summary = ev.get("entity_summary", "")
+                    if summary:
+                        parts = [p.split(":")[0].strip() for p in summary.split(",") if p.strip()]
+                        raw_types = ", ".join(parts)
 
-            type_list = [t.strip() for t in raw_types.split(",") if t.strip()]
-            if len(type_list) > 2:
-                disp_types = f"{', '.join(type_list[:2])} (+{len(type_list) - 2} more)"
-            else:
-                disp_types = ", ".join(type_list) if type_list else "—"
+                type_list = [t.strip() for t in raw_types.split(",") if t.strip()]
+                if len(type_list) > 2:
+                    disp_types = f"{', '.join(type_list[:2])} (+{len(type_list) - 2} more)"
+                else:
+                    disp_types = ", ".join(type_list) if type_list else "—"
 
-            item_types = QTableWidgetItem(disp_types)
-            item_types.setToolTip(f"Detected PII Types:\n{', '.join(type_list) if type_list else 'None'}\n\nSummary:\n{ev.get('entity_summary', '')}")
-            self.table.setItem(row_idx, 4, item_types)
+                item_types = QTableWidgetItem(disp_types)
+                item_types.setToolTip(f"Detected PII Types:\n{', '.join(type_list) if type_list else 'None'}\n\nSummary:\n{ev.get('entity_summary', '')}")
+                self.table.setItem(row_idx, 4, item_types)
 
-            # 5. Action Taken
-            action = str(ev.get("action_taken", "allow")).upper()
-            item_action = QTableWidgetItem(action)
-            item_action.setTextAlignment(Qt.AlignCenter)
-            font = item_action.font()
-            font.setBold(True)
-            item_action.setFont(font)
-            if action in ("BLOCK", "BLOCKED"):
-                item_action.setForeground(QColor("#f87171"))
-            elif action in ("QUARANTINE", "QUARANTINED"):
-                item_action.setForeground(QColor("#fb923c"))
-            elif action in ("WARN", "WARNED"):
-                item_action.setForeground(QColor("#f59e0b"))
-            elif action in ("OVERRIDE", "OVERRIDDEN"):
-                item_action.setForeground(QColor("#c084fc"))
-            else:
-                item_action.setForeground(QColor("#34d399"))
-            self.table.setItem(row_idx, 5, item_action)
+                # 5. Action Taken
+                action = str(ev.get("action_taken", "allow")).upper()
+                item_action = QTableWidgetItem(action)
+                item_action.setTextAlignment(Qt.AlignCenter)
+                font = item_action.font()
+                font.setBold(True)
+                item_action.setFont(font)
+                if action in ("BLOCK", "BLOCKED"):
+                    item_action.setForeground(QColor("#f87171"))
+                elif action in ("QUARANTINE", "QUARANTINED"):
+                    item_action.setForeground(QColor("#fb923c"))
+                elif action in ("WARN", "WARNED"):
+                    item_action.setForeground(QColor("#f59e0b"))
+                elif action in ("OVERRIDE", "OVERRIDDEN"):
+                    item_action.setForeground(QColor("#c084fc"))
+                else:
+                    item_action.setForeground(QColor("#34d399"))
+                self.table.setItem(row_idx, 5, item_action)
 
-            # 6. Override Info
-            override_bool = bool(ev.get("user_override"))
-            reason = ev.get("override_reason", "")
-            if override_bool:
-                item_ov = QTableWidgetItem(f"⚠️ {reason}" if reason else "⚠️ Yes")
-                item_ov.setForeground(QColor("#fbbf24"))
-                item_ov.setToolTip(f"Override Rationale:\n{reason or 'None specified'}")
-            else:
-                item_ov = QTableWidgetItem("—")
-                item_ov.setTextAlignment(Qt.AlignCenter)
-                item_ov.setForeground(QColor("#64748b"))
-            self.table.setItem(row_idx, 6, item_ov)
+                # 6. Override Info
+                override_bool = bool(ev.get("user_override"))
+                reason = ev.get("override_reason", "")
+                if override_bool:
+                    item_ov = QTableWidgetItem(f"⚠️ {reason}" if reason else "⚠️ Yes")
+                    item_ov.setForeground(QColor("#fbbf24"))
+                    item_ov.setToolTip(f"Override Rationale:\n{reason or 'None specified'}")
+                else:
+                    item_ov = QTableWidgetItem("—")
+                    item_ov.setTextAlignment(Qt.AlignCenter)
+                    item_ov.setForeground(QColor("#64748b"))
+                self.table.setItem(row_idx, 6, item_ov)
+        finally:
+            self.table.setUpdatesEnabled(True)
 
         self._on_selection_changed()
 

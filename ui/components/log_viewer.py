@@ -49,7 +49,10 @@ class LogViewer(QWidget):
         self.console.setObjectName("logConsole")
         self.console.setReadOnly(True)
         self.console.setMaximumBlockCount(1000)
-        self.console.setMinimumHeight(80)
+        self.console.setMinimumHeight(100)
+        self.console.document().setDocumentMargin(6)
+        self.console.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.console.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         layout.addLayout(header_layout)
         layout.addWidget(self.console)
@@ -79,7 +82,9 @@ class LogViewer(QWidget):
         # Do not hardcode message text color so it inherits theme-appropriate text color
         line = f"<span style='color: {color}; font-weight: 700; font-family: monospace;'>{prefix}</span> <span>{message}</span>"
         self.console.appendHtml(line)
-        self.console.moveCursor(QTextCursor.End)
+        sb = self.console.verticalScrollBar()
+        if sb:
+            sb.setValue(sb.maximum())
 
     def clear(self) -> None:
         """Clear console content."""
