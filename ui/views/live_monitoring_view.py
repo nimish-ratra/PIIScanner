@@ -16,10 +16,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 
+from backend.config import config_manager
+from backend.custom_recognizers import get_all_supported_entities
 from backend.database import db_manager
 from backend.classifier import get_tier_metadata
 from service.enforcement_policy import policy_manager
 from service.service_controller import ServiceController
+from ui.components.pii_selector_dialog import PiiSelectorDialog
+from ui.components.enforcement_details_dialog import EnforcementEventDetailsDialog, get_source_icon
 
 
 class LiveMonitoringView(QWidget):
@@ -139,11 +143,13 @@ class LiveMonitoringView(QWidget):
         self.card_office = self._create_kpi_card("Office Pre-Save Guard", "STANDBY", "Word & Excel COM Add-In Hook")
         self.card_watcher = self._create_kpi_card("Filesystem Watcher", "3 FOLDERS", "Desktop, Documents, Downloads")
         self.card_policy = self._create_kpi_card("Enforcement Policy", "FAIL-OPEN", "Purview 5-Tier DLP Matrix")
+        self.card_rt_entities = self._create_entity_kpi_card()
         self.card_interceptions = self._create_kpi_card("Total Interceptions", "0", "Recorded in Local Audit DB")
 
         stats_layout.addWidget(self.card_office)
         stats_layout.addWidget(self.card_watcher)
         stats_layout.addWidget(self.card_policy)
+        stats_layout.addWidget(self.card_rt_entities)
         stats_layout.addWidget(self.card_interceptions)
         main_layout.addLayout(stats_layout)
 
@@ -174,6 +180,12 @@ class LiveMonitoringView(QWidget):
 
         filter_box.addStretch()
 
+        self.btn_inspect_ev = QPushButton("👁️ Inspect Event...", self)
+        self.btn_inspect_ev.setFixedHeight(28)
+        self.btn_inspect_ev.setEnabled(False)
+        self.btn_inspect_ev.clicked.connect(self._on_inspect_event)
+        filter_box.addWidget(self.btn_inspect_ev)
+
         self.btn_delete_ev = QPushButton("Delete Selected", self)
         self.btn_delete_ev.setFixedHeight(28)
         self.btn_delete_ev.setEnabled(False)
@@ -191,22 +203,23 @@ class LiveMonitoringView(QWidget):
         self.table = QTableWidget(self)
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
-            "Timestamp", "Source App", "Document / File",
-            "Sensitivity Tier", "Action Taken", "Override", "Detected PII Entities"
+            "Timestamp", "File / Document", "Source",
+            "Sensitivity Tier", "Detected Types", "Action Taken", "Override Info"
         ])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
 
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.cellDoubleClicked.connect(self._on_table_double_clicked)
 
         main_layout.addWidget(self.table, 1)
 
@@ -233,6 +246,75 @@ class LiveMonitoringView(QWidget):
 
         card.lbl_val = lbl_val
         return card
+
+    def _create_entity_kpi_card(self) -> QFrame:
+        card = QFrame(self)
+        card.setObjectName("statCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(2)
+
+        top_row = QHBoxLayout()
+        lbl_top = QLabel("REAL-TIME DETECTION", card)
+        lbl_top.setObjectName("statCardLabel")
+        lbl_top.setStyleSheet("font-size: 10px; font-weight: 700; color: #64748b;")
+        top_row.addWidget(lbl_top)
+        top_row.addStretch()
+
+        btn_edit = QPushButton("⚙️ Edit", card)
+        btn_edit.setFixedHeight(20)
+        btn_edit.setStyleSheet(
+            "background: rgba(37, 99, 235, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); "
+            "border-radius: 4px; padding: 0 6px; font-size: 10px; font-weight: 700;"
+        )
+        btn_edit.setCursor(Qt.PointingHandCursor)
+        btn_edit.clicked.connect(self._on_edit_rt_entities)
+        top_row.addWidget(btn_edit)
+        layout.addLayout(top_row)
+
+        self.lbl_rt_entities_val = QLabel("", card)
+        self.lbl_rt_entities_val.setObjectName("statCardValue")
+        self.lbl_rt_entities_val.setStyleSheet("font-size: 18px; font-weight: 800; color: #38bdf8;")
+        layout.addWidget(self.lbl_rt_entities_val)
+
+        lbl_sub = QLabel("Active PII & Secret Triggers", card)
+        lbl_sub.setStyleSheet("font-size: 10px; color: #94a3b8;")
+        layout.addWidget(lbl_sub)
+
+        self._update_rt_entities_card()
+        return card
+
+    def _update_rt_entities_card(self) -> None:
+        all_count = len(get_all_supported_entities())
+        active_count = len(config_manager.realtime_selected_entities)
+        if active_count == all_count:
+            self.lbl_rt_entities_val.setText(f"ALL {all_count} ACTIVE")
+        else:
+            self.lbl_rt_entities_val.setText(f"{active_count}/{all_count} ACTIVE")
+
+    def _on_edit_rt_entities(self) -> None:
+        all_ents = get_all_supported_entities()
+        current = config_manager.realtime_selected_entities
+        dlg = PiiSelectorDialog(all_ents, current, self, mode="realtime")
+        if dlg.exec():
+            selected = dlg.get_selected_entities()
+            config_manager.realtime_selected_entities = selected
+            config_manager.save()
+            self._update_rt_entities_card()
+            # Live propagate to running background service
+            try:
+                import urllib.request, json
+                payload = json.dumps({"realtime_selected_entities": selected}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{policy_manager.api_port}/policy/realtime-entities",
+                    data=payload,
+                    headers={"Content-Type": "application/json", "User-Agent": "PIISentinel-LiveUI"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=1.0):
+                    pass
+            except Exception:
+                pass
 
     def _on_poll_tick(self) -> None:
         """Periodic background tick: checks service health and refreshes table."""
@@ -350,18 +432,19 @@ class LiveMonitoringView(QWidget):
             item_ts.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row_idx, 0, item_ts)
 
-            # 1. Source App
-            src = str(ev.get("source", "Generic"))
-            item_src = QTableWidgetItem(src)
-            item_src.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_idx, 1, item_src)
-
-            # 2. File Path
+            # 1. File / Document
             fpath = str(ev.get("file_path", ""))
             fname = Path(fpath).name if fpath else "Unknown Document"
             item_file = QTableWidgetItem(fname)
             item_file.setToolTip(fpath)
-            self.table.setItem(row_idx, 2, item_file)
+            self.table.setItem(row_idx, 1, item_file)
+
+            # 2. Source App with icon
+            src = ev.get("app_source") or ev.get("source", "Generic")
+            item_src = QTableWidgetItem(get_source_icon(src))
+            item_src.setTextAlignment(Qt.AlignCenter)
+            item_src.setToolTip(f"Source: {src}")
+            self.table.setItem(row_idx, 2, item_src)
 
             # 3. Sensitivity Tier
             tier_name = str(ev.get("tier", "General"))
@@ -371,41 +454,73 @@ class LiveMonitoringView(QWidget):
             item_tier.setForeground(QColor(meta.get("color", "#94a3b8")))
             self.table.setItem(row_idx, 3, item_tier)
 
-            # 4. Action Taken
+            # 4. Detected Types
+            raw_types = ev.get("detection_types") or ""
+            if not raw_types:
+                summary = ev.get("entity_summary", "")
+                if summary:
+                    parts = [p.split(":")[0].strip() for p in summary.split(",") if p.strip()]
+                    raw_types = ", ".join(parts)
+
+            type_list = [t.strip() for t in raw_types.split(",") if t.strip()]
+            if len(type_list) > 2:
+                disp_types = f"{', '.join(type_list[:2])} (+{len(type_list) - 2} more)"
+            else:
+                disp_types = ", ".join(type_list) if type_list else "—"
+
+            item_types = QTableWidgetItem(disp_types)
+            item_types.setToolTip(f"Detected PII Types:\n{', '.join(type_list) if type_list else 'None'}\n\nSummary:\n{ev.get('entity_summary', '')}")
+            self.table.setItem(row_idx, 4, item_types)
+
+            # 5. Action Taken
             action = str(ev.get("action_taken", "allow")).upper()
             item_action = QTableWidgetItem(action)
             item_action.setTextAlignment(Qt.AlignCenter)
             font = item_action.font()
             font.setBold(True)
             item_action.setFont(font)
-            if action in ("BLOCK", "QUARANTINE"):
+            if action in ("BLOCK", "BLOCKED"):
                 item_action.setForeground(QColor("#f87171"))
-            elif action == "WARN":
+            elif action in ("QUARANTINE", "QUARANTINED"):
+                item_action.setForeground(QColor("#fb923c"))
+            elif action in ("WARN", "WARNED"):
                 item_action.setForeground(QColor("#f59e0b"))
+            elif action in ("OVERRIDE", "OVERRIDDEN"):
+                item_action.setForeground(QColor("#c084fc"))
             else:
                 item_action.setForeground(QColor("#34d399"))
-            self.table.setItem(row_idx, 4, item_action)
+            self.table.setItem(row_idx, 5, item_action)
 
-            # 5. User Override
+            # 6. Override Info
             override_bool = bool(ev.get("user_override"))
-            item_ov = QTableWidgetItem("Yes ⚠️" if override_bool else "No")
-            item_ov.setTextAlignment(Qt.AlignCenter)
+            reason = ev.get("override_reason", "")
             if override_bool:
-                item_ov.setForeground(QColor("#f59e0b"))
-                item_ov.setToolTip(f"Override Rationale:\n{ev.get('override_reason', 'None specified')}")
-            self.table.setItem(row_idx, 5, item_ov)
-
-            # 6. Entities Summary
-            summary = str(ev.get("entity_summary", ""))
-            item_sum = QTableWidgetItem(summary)
-            item_sum.setToolTip(summary)
-            self.table.setItem(row_idx, 6, item_sum)
+                item_ov = QTableWidgetItem(f"⚠️ {reason}" if reason else "⚠️ Yes")
+                item_ov.setForeground(QColor("#fbbf24"))
+                item_ov.setToolTip(f"Override Rationale:\n{reason or 'None specified'}")
+            else:
+                item_ov = QTableWidgetItem("—")
+                item_ov.setTextAlignment(Qt.AlignCenter)
+                item_ov.setForeground(QColor("#64748b"))
+            self.table.setItem(row_idx, 6, item_ov)
 
         self._on_selection_changed()
 
     def _on_selection_changed(self) -> None:
         row = self.table.currentRow()
-        self.btn_delete_ev.setEnabled(0 <= row < len(self.enforcement_events))
+        has_sel = 0 <= row < len(self.enforcement_events)
+        self.btn_inspect_ev.setEnabled(has_sel)
+        self.btn_delete_ev.setEnabled(has_sel)
+
+    def _on_table_double_clicked(self, row: int, col: int) -> None:
+        self._on_inspect_event()
+
+    def _on_inspect_event(self) -> None:
+        row = self.table.currentRow()
+        if 0 <= row < len(self.enforcement_events):
+            ev = self.enforcement_events[row]
+            dlg = EnforcementEventDetailsDialog(ev, self)
+            dlg.exec()
 
     def _on_delete_event(self) -> None:
         row = self.table.currentRow()

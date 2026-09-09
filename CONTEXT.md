@@ -305,14 +305,16 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
    - Implemented as a C# COM/VSTO Add-In (`office_addin/`).
    - Hooks native `Application.DocumentBeforeSave` and `Application.WorkbookBeforeSave`.
    - Extracts text directly from the in-memory document model via Office Interop prior to writing to disk.
-   - If the local classification service recommends `block`, the event handler sets `e.Cancel = true`, preventing file writing.
-   - Displays a modern modal WPF dialog (`BlockDialog.xaml`) showing sensitivity tier, redacted findings, and an override escape hatch requiring an audit rationale.
+   - If the local classification service recommends `block`, the event handler sets `Cancel = true`, preventing file writing.
+   - Displays a modal WPF dialog (`BlockDialog.xaml`) showing sensitivity tier, redacted findings, and an override escape hatch requiring an audit rationale (`TxtOverrideReason`, minimum 5 characters with live validation).
+   - Clicking *"Save Anyway (Override)"* validates the rationale, sets `dialog.UserOverridden = true`, closes the modal, and causes the event handler to explicitly set `Cancel = false` so Word/Excel saves the file cleanly. Concurrently logs an audit event (`POST /enforcement/log`) with `action_taken="override"`, `user_override=true`, and the typed justification.
 2. **Tier 2 — Generic Filesystem Watcher (Detect-and-Remediate):**
    - Implemented with `watchdog` (`file_watcher/watcher_service.py`).
    - Monitors user directories: Desktop, Documents, Downloads.
    - Debounces rapid consecutive write events (2.0s debounce window) and waits for file handle write locks to release.
    - Calls `POST /classify/file` on the local microservice.
    - If the policy recommends `quarantine`, moves the file into an AES-256 encrypted zip (`file_watcher/quarantine_bridge.py`), permanently deletes the plaintext file, and displays a Windows toast notification (`file_watcher/toast_notifier.py`).
+   - *Architectural Boundary:* Filesystem watcher is strictly detect-and-remediate; override affordances apply solely to Office pre-save interception.
    - **Theoretical Phase 3 Escalation:** A signed Windows Kernel Minifilter Driver (`fltmgr.sys`) would be required for pre-write blocking of generic non-Office applications (e.g. Notepad, VS Code). In Phase 2, the post-write detect-and-remediate model provides immediate coverage without kernel driver signing hurdles.
 
 ### 8.2 Shared Local Classification Microservice (`service/`)
@@ -325,7 +327,10 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
   - `POST /classify/text` — body: `{"text": string, "source_hint": string}` -> returns `{tier, level, badge, findings, recommended_action, rationale}`.
   - `POST /classify/file` — body: `{"path": string}` -> runs Apache Tika extraction followed by Presidio + Purview classification.
   - `POST /enforcement/log` — logs block, quarantine, warn, allow, or override events to SQLite.
-  - `GET /policy` and `POST /policy` — read/update active policy mapping.
+  - `GET /policy` and `POST /policy` — read/update active policy mapping and real-time selected entity list (`realtime_selected_entities`).
+  - `GET /policy/realtime-entities` and `POST /policy/realtime-entities` — dedicated loopback endpoints for querying and updating the active real-time entity subset without service restart.
+- **Scoped Entity Filtering:** `POST /classify/text` and `POST /classify/file` filter Presidio findings to `config_manager.realtime_selected_entities` before document classification. This ensures real-time pre-save blocks and file watcher quarantines are independently configurable from batch directory scans (`config_manager.selected_entities`).
+- **UI Configuration:** Real-time detection types are managed via `PiiSelectorDialog(mode="realtime")` in Settings (Tab 2: *Real-Time Detection Types*) and surfaced as a dedicated KPI card with an inline `⚙️ Edit` shortcut in *Live Monitoring*.
 - **Standalone CLI Invocation:** `python -m service.api_server` directly starts the Uvicorn web service.
 - **Service Runner:** `service/service_runner.py` runs the background service with a system tray icon (`pystray`), pause/resume toggle, and Windows autostart helper (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`). Menu items include *"Open Logs Folder"* and *"View Enforcement Log"* wired directly to `%APPDATA%\PIISentinel\logs\` via `get_logs_dir()`. Output uses standard ASCII strings to ensure 100% compatibility with Windows `cp1252` console encoding.
 - **Audit Logging:** Writes rotating audit logs to `%APPDATA%\PIISentinel\logs\enforcement.log`. Raw PII is never logged; only redacted summaries are persisted.
@@ -367,29 +372,44 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 ### 8.5 UI Extensions & Audit Logging
 
 - **Database Extension (`backend/database.py`):**
-  - Created `enforcement_events` table: `id`, `timestamp`, `file_path`, `tier`, `action_taken`, `user_override`, `override_reason`, `entity_summary`, `source`.
-  - Indexed by `timestamp DESC`, `tier`, and `action_taken`.
+  - Created and migrated `enforcement_events` table: `id`, `timestamp`, `file_path`, `tier`, `action_taken`, `user_override`, `override_reason`, `entity_summary`, `source`, `detection_types`, `app_source`.
+  - Indexed by `timestamp DESC`, `tier`, `action_taken`, and `app_source`.
+  - Built-in CSV exporter `export_enforcement_events_csv` guaranteeing safe redacted data.
+- **Dedicated Real-Time Interception Log View (`ui/views/history_view.py` Tab 2):**
+  - Search & Multi-Filter Bar: Free-text search over file paths, filtering by Action (BLOCK, QUARANTINE, WARN, OVERRIDE, ALLOW), Sensitivity Tier, and Source (Word, Excel, Filesystem Watcher).
+  - 7-Column Redesigned Grid: Timestamp, File / Document (with full path tooltip), Source (with icon badge), Sensitivity Tier (Purview color badge), Detected Types (truncated list with tooltip), Action Taken (distinct colored pills), and Override Info.
+  - Detail Inspector: Double-click or `👁️ Inspect Event Details...` opens `EnforcementEventDetailsDialog` (`ui/components/enforcement_details_dialog.py`) showing complete file location, source, action, override rationale, and redacted findings (raw PII is strictly never rendered).
+  - One-Click CSV Export: `📥 Export Audit CSV` writes complete historical or filtered enforcement logs to disk.
 - **Live Monitoring View (`ui/views/live_monitoring_view.py`):**
   - Dedicated real-time monitoring view embedded as Nav Tab 4 in `MainWindow`.
   - 1-Click GUI controls to Start, Stop, and Probe the background protection service.
-  - 4 Real-time KPI Cards: Office Pre-Save Guard status, Filesystem Watcher monitored folders count, Enforcement Policy mode (Fail-Closed/Fail-Open), and Total Interceptions recorded.
-  - Auto-refreshing live stream of intercepted saves, pre-save blocks, quarantines, warnings, and user override audit rationales.
+  - 5 Real-Time KPI Cards: Office Pre-Save Guard status, Filesystem Watcher monitored folders count, Enforcement Policy mode (Fail-Closed/Fail-Open), Real-Time Detection Types count (with inline `⚙️ Edit` shortcut), and Total Interceptions recorded.
+  - Auto-refreshing live stream of intercepted saves with aligned 7-column layout, color-coded pills, and double-click inspection dialog.
   - Interactive test probe button sending mock pre-save classification payloads with millisecond response latency timing.
-- **Service Controller (`service/service_controller.py`):**
-  - Central programmatic lifecycle manager (`is_running`, `start`, `stop`, `get_health`, `test_pre_save_probe`).
-  - Enables launching the headless background service directly from the GUI as well as retaining full standalone CLI capability (`python -m service.service_runner --headless`).
-- **History View (`ui/views/history_view.py`):**
-  - Tab 1: `📁 Directory Scans` (Phase 1 batch scan history, reload findings, HTML dashboard opener).
-  - Tab 2: `🛡️ Real-Time Enforcement Events` (filterable by Action and Sensitivity Tier, with single-event and full-log deletion).
+- **Service Controller & Graceful Shutdown (`service/service_controller.py` & `service/api_server.py`):**
+  - Central programmatic lifecycle manager (`is_running`, `start`, `stop`, `is_port_bound`, `get_health`, `test_pre_save_probe`).
+  - Implements fully idempotent `start()` and `stop()` operations with clean port verification.
+  - Added `POST /service/stop` endpoint to FastAPI microservice for clean remote teardown of both the Uvicorn server and the Watchdog observer thread.
+  - Top Utility Bar in `MainWindow` features a live Service Status indicator pill (`🟢 SERVICE: ACTIVE` / `🔴 SERVICE: OFFLINE`) and quick 1-click `▶ Start Service` / `⏹ Stop Service` toggle, synchronized with `LiveMonitoringView`.
 - **Settings View (`ui/views/settings_view.py`):**
   - Tab 1: `⚙️ General & Scan Defaults` (confidence threshold, extensions, Tesseract/Java diagnostics, theme switcher).
-  - Tab 2: `🛡️ Real-Time Enforcement Policy` (tier action dropdowns, fail-safe mode toggle, monitored folder manager, quarantine archive path, live service probe tester, and Office add-in registration status).
+  - Tab 2: `🛡️ Real-Time Enforcement Policy` (scoped real-time entity selection with View/Edit modal, tier action dropdowns, fail-safe mode toggle, monitored folder manager, quarantine archive path, live service probe tester, and Office add-in registration status).
+- **UI Design System & Light Mode Contrast Priority (`ui/theme.py` & `ui/views/scan_view.py`):**
+  - Token-based design supporting Dark Mode ("Obsidian Slate") and Light Mode ("Studio Slate").
+  - Light mode contrast prioritized: pure white card surfaces (`#ffffff`) on cool neutral slate canvas (`#f8fafc`), high-contrast dark slate typography (`#0f172a`), subtle slate borders (`#e2e8f0`).
+  - Section headers: overhauled `QGroupBox::title` styling to render cleanly as bold integrated section headers rather than floating pill badges.
+  - Scan View Telemetry Deck: modernized progress section with a responsive 5-chip `StatCard` deck (`Files Scanned`, `Files with PII`, `Total Findings`, `Scan Rate` in f/s, and `Elapsed Time`).
 
 ### 8.6 Testing Suite
 
-- `tests/test_enforcement_service.py` (9 tests): Validates policy mapping, resolve_action dual path, FastAPI endpoints (`/health`, `/classify/text`, `/classify/file`, `/enforcement/log`, `/policy`), and loopback security rejection (403).
+- `tests/test_backend.py`: Core scanner, recognizers, database, classification, and redaction tests.
+- `tests/test_enforcement_service.py` (12 tests): Validates policy mapping, resolve_action dual path, FastAPI endpoints (`/health`, `/classify/text`, `/classify/file`, `/enforcement/log`, `/policy`, `/service/stop`), ServiceController methods, and loopback security rejection (403).
 - `tests/test_file_watcher.py` (4 tests): Validates quarantine bridge encryption, plaintext file deletion, SQLite event logging, debouncing ignore rules, and benign file preservation.
-- Run complete test suite:
+- `tests/test_interception_log.py` (4 tests): Validates enforcement schema, multi-filters, CSV export, and UI helper badges.
+- `tests/test_realtime_entities.py` (4 tests): Validates decoupled 36-entity real-time configuration and policy push.
+- `tests/test_ui.py` (7 tests): Validates MainWindow, tab navigation, results filtering, dialogs, and settings persistence.
+- Run complete test suite (41 tests passing):
   ```powershell
   python -m unittest discover tests
   ```
+

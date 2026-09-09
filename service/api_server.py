@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.config import get_logs_dir
+from backend.config import get_logs_dir, config_manager
 from backend.presidio_detector import PresidioDetector, redact_value
 from backend.classifier import classify_document, classify_finding, SensitivityTier
 from backend.tika_extractor import TikaExtractor
@@ -96,6 +96,8 @@ class EnforcementLogRequest(BaseModel):
     override_reason: Optional[str] = ""
     entity_summary: Optional[str] = ""
     source: Optional[str] = "Office Add-in"
+    detection_types: Optional[str] = ""
+    app_source: Optional[str] = None
 
 
 # -------------------------------------------------------------
@@ -175,8 +177,12 @@ def classify_text(req: TextClassificationRequest):
     detector = PresidioDetector.get_instance()
     raw_findings = detector.analyze_text(text, score_threshold=0.40)
 
+    # Filter findings to real-time configured entity types
+    allowed_types = set(config_manager.realtime_selected_entities)
+    filtered_findings = [f for f in raw_findings if f.get("entity") in allowed_types]
+
     # Classify document
-    classification = classify_document(raw_findings)
+    classification = classify_document(filtered_findings)
     tier = classification["tier"]
     level = classification["level"]
     badge = classification["badge"]
@@ -189,7 +195,7 @@ def classify_text(req: TextClassificationRequest):
     # Format findings with safe redacted values
     findings_list: List[FindingItem] = []
     entity_counts: Dict[str, int] = {}
-    for f in raw_findings:
+    for f in filtered_findings:
         ent = f.get("entity", "PII")
         entity_counts[ent] = entity_counts.get(ent, 0) + 1
         findings_list.append(FindingItem(
@@ -247,7 +253,11 @@ def classify_file(req: FileClassificationRequest):
     detector = PresidioDetector.get_instance()
     raw_findings = detector.analyze_text(extracted_text, score_threshold=0.40)
 
-    classification = classify_document(raw_findings)
+    # Filter findings to real-time configured entity types
+    allowed_types = set(config_manager.realtime_selected_entities)
+    filtered_findings = [f for f in raw_findings if f.get("entity") in allowed_types]
+
+    classification = classify_document(filtered_findings)
     tier = classification["tier"]
     level = classification["level"]
     badge = classification["badge"]
@@ -257,7 +267,7 @@ def classify_file(req: FileClassificationRequest):
 
     findings_list: List[FindingItem] = []
     entity_counts: Dict[str, int] = {}
-    for f in raw_findings:
+    for f in filtered_findings:
         ent = f.get("entity", "PII")
         entity_counts[ent] = entity_counts.get(ent, 0) + 1
         findings_list.append(FindingItem(
@@ -292,6 +302,7 @@ def log_enforcement_event(req: EnforcementLogRequest):
     Log an enforcement action (block, quarantine, warn, override) to history.db.
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    app_src = req.app_source or req.source or "Generic"
     event_data = {
         "timestamp": timestamp,
         "file_path": req.file_path,
@@ -300,13 +311,15 @@ def log_enforcement_event(req: EnforcementLogRequest):
         "user_override": 1 if req.user_override else 0,
         "override_reason": req.override_reason or "",
         "entity_summary": req.entity_summary or "",
-        "source": req.source or "Generic"
+        "source": req.source or "Generic",
+        "detection_types": req.detection_types or "",
+        "app_source": app_src
     }
 
     event_id = db_manager.insert_enforcement_event(event_data)
     logger.info(
         f"Enforcement Event Logged: ID={event_id} | Action={req.action_taken} | "
-        f"Tier={req.tier} | Override={req.user_override} | Source={req.source} | File={req.file_path}"
+        f"Tier={req.tier} | Override={req.user_override} | Source={app_src} | File={req.file_path}"
     )
 
     return {"success": True, "event_id": event_id, "timestamp": timestamp}
@@ -314,20 +327,64 @@ def log_enforcement_event(req: EnforcementLogRequest):
 
 @app.get("/policy")
 def get_policy():
-    """Retrieve active enforcement policy."""
-    return policy_manager.to_dict()
+    """Retrieve active enforcement policy including real-time entity selection."""
+    data = policy_manager.to_dict()
+    data["realtime_selected_entities"] = config_manager.realtime_selected_entities
+    return data
 
 
 @app.post("/policy")
 def update_policy(updates: Dict[str, Any]):
     """Update active enforcement policy."""
+    if "realtime_selected_entities" in updates and isinstance(updates["realtime_selected_entities"], list):
+        config_manager.realtime_selected_entities = updates["realtime_selected_entities"]
+        logger.info(f"Real-time selected entities updated via /policy: {len(updates['realtime_selected_entities'])} active.")
     policy_manager.update_from_dict(updates)
     logger.info("Enforcement policy updated via API.")
-    return {"success": True, "policy": policy_manager.to_dict()}
+    data = policy_manager.to_dict()
+    data["realtime_selected_entities"] = config_manager.realtime_selected_entities
+    return {"success": True, "policy": data}
+
+
+@app.get("/policy/realtime-entities")
+def get_realtime_entities():
+    """Retrieve active real-time entity selection."""
+    return {"realtime_selected_entities": config_manager.realtime_selected_entities}
+
+
+@app.post("/policy/realtime-entities")
+def update_realtime_entities(req: Dict[str, Any]):
+    """Update active real-time entity selection."""
+    entities = req.get("realtime_selected_entities")
+    if entities is not None and isinstance(entities, list):
+        config_manager.realtime_selected_entities = entities
+        logger.info(f"Real-time selected entities updated via /policy/realtime-entities: {len(entities)} active.")
+    return {"success": True, "realtime_selected_entities": config_manager.realtime_selected_entities}
+
+
+@app.post("/service/stop")
+def stop_service():
+    """
+    Gracefully stop the background service (Uvicorn + Watchdog).
+    Idempotent and safe to invoke repeatedly.
+    """
+    def _shutdown():
+        import time
+        time.sleep(0.2)
+        if hasattr(app.state, "runner") and app.state.runner:
+            try:
+                app.state.runner.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping runner: {e}")
+
+    import threading
+    threading.Thread(target=_shutdown, daemon=True, name="StopServiceThread").start()
+    return {"success": True, "message": "Service shutdown initiated"}
 
 
 if __name__ == "__main__":
     import uvicorn
     print(f"Starting PII Sentinel Classification Microservice on http://127.0.0.1:{policy_manager.api_port} (Loopback Only)...")
     uvicorn.run("service.api_server:app", host="127.0.0.1", port=policy_manager.api_port, reload=False)
+
 

@@ -10,15 +10,16 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QTabWidget, QComboBox
+    QHeaderView, QMessageBox, QTabWidget, QComboBox, QFileDialog
 )
 from PySide6.QtGui import QColor
 from PySide6.QtCore import Qt, Signal
 
 from backend.database import db_manager
 from backend.classifier import TIER_METADATA, SensitivityTier
+from ui.components.enforcement_details_dialog import EnforcementEventDetailsDialog, get_source_icon
 
 
 class HistoryView(QWidget):
@@ -134,42 +135,46 @@ class HistoryView(QWidget):
         enf_filter_bar = QHBoxLayout()
         enf_filter_bar.setSpacing(10)
 
-        lbl_filter_action = QLabel("Action Filter:", tab_enforcement)
-        lbl_filter_action.setStyleSheet("color: #94a3b8; font-size: 12px;")
-        enf_filter_bar.addWidget(lbl_filter_action)
+        # Search Box
+        self.edit_enf_search = QLineEdit(tab_enforcement)
+        self.edit_enf_search.setPlaceholderText("🔍 Search intercepted file path...")
+        self.edit_enf_search.setMinimumWidth(220)
+        self.edit_enf_search.textChanged.connect(self.refresh_enforcement)
+        enf_filter_bar.addWidget(self.edit_enf_search)
 
+        # Action Filter
         self.combo_enf_action = QComboBox(tab_enforcement)
-        self.combo_enf_action.addItem("All Actions")
-        self.combo_enf_action.addItem("block")
-        self.combo_enf_action.addItem("quarantine")
-        self.combo_enf_action.addItem("warn")
-        self.combo_enf_action.addItem("override")
-        self.combo_enf_action.addItem("allow")
+        self.combo_enf_action.addItems(["All Actions", "BLOCK", "QUARANTINE", "WARN", "OVERRIDE", "ALLOW"])
         self.combo_enf_action.currentIndexChanged.connect(self.refresh_enforcement)
         enf_filter_bar.addWidget(self.combo_enf_action)
 
-        lbl_filter_tier = QLabel("Tier Filter:", tab_enforcement)
-        lbl_filter_tier.setStyleSheet("color: #94a3b8; font-size: 12px;")
-        enf_filter_bar.addWidget(lbl_filter_tier)
-
+        # Tier Filter
         self.combo_enf_tier = QComboBox(tab_enforcement)
-        self.combo_enf_tier.addItem("All Tiers")
-        self.combo_enf_tier.addItem("Restricted")
-        self.combo_enf_tier.addItem("Highly Confidential")
-        self.combo_enf_tier.addItem("Confidential")
-        self.combo_enf_tier.addItem("General")
-        self.combo_enf_tier.addItem("Public")
+        self.combo_enf_tier.addItems(["All Tiers", "Restricted", "Highly Confidential", "Confidential", "General", "Public"])
         self.combo_enf_tier.currentIndexChanged.connect(self.refresh_enforcement)
         enf_filter_bar.addWidget(self.combo_enf_tier)
 
+        # Source Filter
+        self.combo_enf_source = QComboBox(tab_enforcement)
+        self.combo_enf_source.addItems(["All Sources", "Word", "Excel", "Filesystem Watcher"])
+        self.combo_enf_source.currentIndexChanged.connect(self.refresh_enforcement)
+        enf_filter_bar.addWidget(self.combo_enf_source)
+
         enf_filter_bar.addStretch()
+
+        # CSV Export Button
+        self.btn_export_enf_csv = QPushButton("📥 Export Audit CSV", tab_enforcement)
+        self.btn_export_enf_csv.setFixedHeight(30)
+        self.btn_export_enf_csv.clicked.connect(self._on_export_enforcement_csv)
+        enf_filter_bar.addWidget(self.btn_export_enf_csv)
+
         layout_enf.addLayout(enf_filter_bar)
 
         # Enforcement Table
         self.table_enforcement = QTableWidget(tab_enforcement)
         self.table_enforcement.setColumnCount(7)
         self.table_enforcement.setHorizontalHeaderLabels([
-            "Timestamp", "File Location", "Sensitivity Tier", "Action Taken", "Override", "Source", "Findings / Rationale"
+            "Timestamp", "File / Document", "Source", "Sensitivity Tier", "Detected Types", "Action Taken", "Override Info"
         ])
         self.table_enforcement.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table_enforcement.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -182,6 +187,7 @@ class HistoryView(QWidget):
         self.table_enforcement.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_enforcement.setSelectionMode(QTableWidget.SingleSelection)
         self.table_enforcement.itemSelectionChanged.connect(self._on_enf_selection_changed)
+        self.table_enforcement.cellDoubleClicked.connect(self._on_enf_double_clicked)
 
         layout_enf.addWidget(self.table_enforcement)
 
@@ -189,17 +195,23 @@ class HistoryView(QWidget):
         enf_actions_bar = QHBoxLayout()
         enf_actions_bar.setSpacing(12)
 
+        self.btn_inspect_enf = QPushButton("👁️ Inspect Event Details...", tab_enforcement)
+        self.btn_inspect_enf.setEnabled(False)
+        self.btn_inspect_enf.clicked.connect(self._on_inspect_enforcement_event)
+        enf_actions_bar.addWidget(self.btn_inspect_enf)
+
         self.btn_delete_enf = QPushButton("Delete Selected Event", tab_enforcement)
         self.btn_delete_enf.setObjectName("dangerButton")
         self.btn_delete_enf.setEnabled(False)
         self.btn_delete_enf.clicked.connect(self._on_delete_enforcement_event)
+        enf_actions_bar.addWidget(self.btn_delete_enf)
+
+        enf_actions_bar.addStretch()
 
         self.btn_clear_enf = QPushButton("Clear All Enforcement Events", tab_enforcement)
         self.btn_clear_enf.clicked.connect(self._on_clear_enforcement_events)
-
-        enf_actions_bar.addWidget(self.btn_delete_enf)
-        enf_actions_bar.addStretch()
         enf_actions_bar.addWidget(self.btn_clear_enf)
+
         layout_enf.addLayout(enf_actions_bar)
 
         self.tabs.addTab(tab_enforcement, "🛡️ Real-Time Enforcement Events")
@@ -313,7 +325,7 @@ class HistoryView(QWidget):
         self.refresh_enforcement()
 
     def refresh_enforcement(self) -> None:
-        """Fetch real-time enforcement events from SQLite and populate enforcement table."""
+        """Fetch real-time enforcement events from SQLite with filters and populate enforcement table."""
         action_filter = self.combo_enf_action.currentText()
         if action_filter == "All Actions":
             action_filter = None
@@ -322,27 +334,47 @@ class HistoryView(QWidget):
         if tier_filter == "All Tiers":
             tier_filter = None
 
+        source_filter = self.combo_enf_source.currentText()
+        if source_filter == "All Sources":
+            source_filter = None
+
+        search_query = self.edit_enf_search.text().strip()
+        if not search_query:
+            search_query = None
+
         try:
             self.enforcement_events = db_manager.get_enforcement_events(
-                limit=200, action=action_filter, tier=tier_filter
+                limit=300,
+                action=action_filter,
+                tier=tier_filter,
+                source=source_filter,
+                search=search_query
             )
         except Exception:
             self.enforcement_events = []
 
         self.table_enforcement.setRowCount(len(self.enforcement_events))
         for row_idx, ev in enumerate(self.enforcement_events):
-            # Timestamp
+            # 0. Timestamp
             item_ts = QTableWidgetItem(str(ev.get("timestamp", "")))
             item_ts.setTextAlignment(Qt.AlignCenter)
             self.table_enforcement.setItem(row_idx, 0, item_ts)
 
-            # File Location
+            # 1. File / Document
             file_p = str(ev.get("file_path", ""))
-            item_file = QTableWidgetItem(file_p)
+            fname = Path(file_p).name or file_p
+            item_file = QTableWidgetItem(fname)
             item_file.setToolTip(file_p)
             self.table_enforcement.setItem(row_idx, 1, item_file)
 
-            # Sensitivity Tier
+            # 2. Source (Word / Excel / Watcher with icon)
+            src = ev.get("app_source") or ev.get("source", "Generic")
+            item_src = QTableWidgetItem(get_source_icon(src))
+            item_src.setTextAlignment(Qt.AlignCenter)
+            item_src.setToolTip(f"Audit Source: {src}")
+            self.table_enforcement.setItem(row_idx, 2, item_src)
+
+            # 3. Sensitivity Tier
             tier_name = str(ev.get("tier", "General"))
             meta = TIER_METADATA.get(
                 SensitivityTier(tier_name) if tier_name in [t.value for t in SensitivityTier] else SensitivityTier.GENERAL,
@@ -350,44 +382,59 @@ class HistoryView(QWidget):
             )
             item_tier = QTableWidgetItem(f"{meta.get('badge_emoji', '⚪')} {tier_name}")
             item_tier.setTextAlignment(Qt.AlignCenter)
-            color_hex = meta.get("color_hex", "#94a3b8")
+            color_hex = meta.get("color_hex", meta.get("color", "#94a3b8"))
             item_tier.setForeground(QColor(color_hex))
-            self.table_enforcement.setItem(row_idx, 2, item_tier)
+            self.table_enforcement.setItem(row_idx, 3, item_tier)
 
-            # Action Taken
+            # 4. Detected Types
+            raw_types = ev.get("detection_types") or ""
+            if not raw_types:
+                summary = ev.get("entity_summary", "")
+                if summary:
+                    parts = [p.split(":")[0].strip() for p in summary.split(",") if p.strip()]
+                    raw_types = ", ".join(parts)
+
+            type_list = [t.strip() for t in raw_types.split(",") if t.strip()]
+            if len(type_list) > 2:
+                disp_types = f"{', '.join(type_list[:2])} (+{len(type_list) - 2} more)"
+            else:
+                disp_types = ", ".join(type_list) if type_list else "—"
+
+            item_types = QTableWidgetItem(disp_types)
+            item_types.setToolTip(f"Detected PII Types:\n{', '.join(type_list) if type_list else 'None'}\n\nSummary:\n{ev.get('entity_summary', '')}")
+            self.table_enforcement.setItem(row_idx, 4, item_types)
+
+            # 5. Action Taken (Pill)
             action = str(ev.get("action_taken", "allow")).upper()
             item_action = QTableWidgetItem(action)
             item_action.setTextAlignment(Qt.AlignCenter)
-            if action in ("BLOCK", "QUARANTINE"):
+            font = item_action.font()
+            font.setBold(True)
+            item_action.setFont(font)
+            if action in ("BLOCK", "BLOCKED"):
                 item_action.setForeground(QColor("#f87171"))
-            elif action in ("WARN", "OVERRIDE"):
+            elif action in ("QUARANTINE", "QUARANTINED"):
+                item_action.setForeground(QColor("#fb923c"))
+            elif action in ("WARN", "WARNED"):
                 item_action.setForeground(QColor("#fbbf24"))
+            elif action in ("OVERRIDE", "OVERRIDDEN"):
+                item_action.setForeground(QColor("#c084fc"))
             else:
-                item_action.setForeground(QColor("#4ade80"))
-            self.table_enforcement.setItem(row_idx, 3, item_action)
+                item_action.setForeground(QColor("#34d399"))
+            self.table_enforcement.setItem(row_idx, 5, item_action)
 
-            # Override
-            override_val = "Yes" if ev.get("user_override") else "No"
+            # 6. Override Info
+            is_override = bool(ev.get("user_override"))
             reason = ev.get("override_reason", "")
-            if reason:
-                override_val += f" ({reason})"
-            item_ov = QTableWidgetItem(override_val)
-            item_ov.setTextAlignment(Qt.AlignCenter)
-            if ev.get("user_override"):
-                item_ov.setForeground(QColor("#f59e0b"))
-            self.table_enforcement.setItem(row_idx, 4, item_ov)
-
-            # Source
-            src = str(ev.get("source", "Generic"))
-            item_src = QTableWidgetItem(src)
-            item_src.setTextAlignment(Qt.AlignCenter)
-            self.table_enforcement.setItem(row_idx, 5, item_src)
-
-            # Findings / Rationale
-            summary = str(ev.get("entity_summary", ""))
-            item_sum = QTableWidgetItem(summary)
-            item_sum.setToolTip(summary)
-            self.table_enforcement.setItem(row_idx, 6, item_sum)
+            if is_override:
+                item_ov = QTableWidgetItem(f"⚠️ {reason}" if reason else "⚠️ Yes")
+                item_ov.setForeground(QColor("#fbbf24"))
+                item_ov.setToolTip(f"Override Rationale:\n{reason or 'None provided'}")
+            else:
+                item_ov = QTableWidgetItem("—")
+                item_ov.setTextAlignment(Qt.AlignCenter)
+                item_ov.setForeground(QColor("#64748b"))
+            self.table_enforcement.setItem(row_idx, 6, item_ov)
 
         self._on_enf_selection_changed()
 
@@ -399,7 +446,34 @@ class HistoryView(QWidget):
 
     def _on_enf_selection_changed(self) -> None:
         ev = self._get_selected_enforcement_event()
-        self.btn_delete_enf.setEnabled(ev is not None)
+        has_sel = ev is not None
+        self.btn_inspect_enf.setEnabled(has_sel)
+        self.btn_delete_enf.setEnabled(has_sel)
+
+    def _on_enf_double_clicked(self, row: int, col: int) -> None:
+        self._on_inspect_enforcement_event()
+
+    def _on_inspect_enforcement_event(self) -> None:
+        ev = self._get_selected_enforcement_event()
+        if ev:
+            dlg = EnforcementEventDetailsDialog(ev, self)
+            dlg.exec()
+
+    def _on_export_enforcement_csv(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Real-Time Enforcement Audit Log",
+            "enforcement_audit_log.csv",
+            "CSV Files (*.csv)"
+        )
+        if path:
+            success = db_manager.export_enforcement_events_csv(path, self.enforcement_events)
+            if success:
+                QMessageBox.information(
+                    self, "Export Successful",
+                    f"Successfully exported {len(self.enforcement_events)} audit events to:\n{path}"
+                )
+            else:
+                QMessageBox.critical(self, "Export Failed", f"Could not write audit CSV to:\n{path}")
 
     def _on_delete_enforcement_event(self) -> None:
         ev = self._get_selected_enforcement_event()

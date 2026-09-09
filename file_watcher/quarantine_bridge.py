@@ -72,7 +72,9 @@ def quarantine_file(
             "user_override": 0,
             "override_reason": "",
             "entity_summary": entity_summary,
-            "source": source
+            "source": source or "Filesystem Watcher",
+            "detection_types": ", ".join(entity_counts.keys()),
+            "app_source": "Filesystem Watcher"
         })
 
         logger.info(f"Successfully quarantined '{path_obj.name}' to '{archive_dest}'. Event ID: {event_id}")

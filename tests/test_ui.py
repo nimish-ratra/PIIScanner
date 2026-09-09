@@ -40,9 +40,10 @@ class TestUI(unittest.TestCase):
         self.assertIsNotNone(self.window.view_scan)
         self.assertIsNotNone(self.window.view_results)
         self.assertIsNotNone(self.window.view_history)
+        self.assertIsNotNone(self.window.view_live)
         self.assertIsNotNone(self.window.view_settings)
-        self.assertEqual(self.window.stack.count(), 4)
-        print("[OK] MainWindow and 4 views initialized.")
+        self.assertEqual(self.window.stack.count(), 5)
+        print("[OK] MainWindow and 5 views initialized.")
 
     def test_02_navigation_switching(self):
         # Switch to Results (tab index 1)
@@ -53,9 +54,13 @@ class TestUI(unittest.TestCase):
         self.window.btn_nav_history.click()
         self.assertEqual(self.window.stack.currentIndex(), 2)
 
-        # Switch to Settings (tab index 3)
-        self.window.btn_nav_settings.click()
+        # Switch to Live Monitoring (tab index 3)
+        self.window.btn_nav_live.click()
         self.assertEqual(self.window.stack.currentIndex(), 3)
+
+        # Switch to Settings (tab index 4)
+        self.window.btn_nav_settings.click()
+        self.assertEqual(self.window.stack.currentIndex(), 4)
 
         # Switch back to Scan (tab index 0)
         self.window.btn_nav_scan.click()

@@ -107,20 +107,38 @@ namespace PIISentinel.OfficeAddin
             // 3. Handle Block Action
             if (result.recommended_action == "block")
             {
-                Cancel = true;
+                bool userOverridden = false;
+                string overrideReason = string.Empty;
 
-                var dialog = new BlockDialog(result, wbName);
-                bool? dialogRes = dialog.ShowDialog();
+                try
+                {
+                    var dialog = new BlockDialog(result, wbName);
+                    bool? dialogRes = dialog.ShowDialog();
+                    userOverridden = dialog.UserOverridden;
+                    overrideReason = dialog.OverrideReason;
+                }
+                catch (Exception)
+                {
+                    userOverridden = false;
+                }
 
-                if (dialog.UserOverridden)
+                if (userOverridden)
                 {
                     Cancel = false; // Override approved
-                    _apiClient.LogEnforcement(wbPath, result.tier, "override", true, dialog.OverrideReason, entitySummary, "Office Add-in (Excel)");
+                    try
+                    {
+                        _apiClient.LogEnforcement(wbPath, result.tier, "override", true, overrideReason, entitySummary, "Office Add-in (Excel)", "Excel", entitySummary);
+                    }
+                    catch { }
                 }
                 else
                 {
                     Cancel = true;
-                    _apiClient.LogEnforcement(wbPath, result.tier, "block", false, string.Empty, entitySummary, "Office Add-in (Excel)");
+                    try
+                    {
+                        _apiClient.LogEnforcement(wbPath, result.tier, "block", false, string.Empty, entitySummary, "Office Add-in (Excel)", "Excel", entitySummary);
+                    }
+                    catch { }
                 }
             }
             // 4. Handle Warn Action

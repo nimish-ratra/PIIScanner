@@ -90,23 +90,41 @@ namespace PIISentinel.OfficeAddin
             // 3. Handle Block Action
             if (result.recommended_action == "block")
             {
-                Cancel = true; // Prevent save immediately
+                bool userOverridden = false;
+                string overrideReason = string.Empty;
 
-                // Show WPF BlockDialog modal
-                var dialog = new BlockDialog(result, docName);
-                bool? dialogRes = dialog.ShowDialog();
-
-                if (dialog.UserOverridden)
+                try
                 {
-                    // User supplied valid override justification
-                    Cancel = false; // Allow save to proceed
-                    _apiClient.LogEnforcement(docPath, result.tier, "override", true, dialog.OverrideReason, entitySummary, "Office Add-in (Word)");
+                    // Show WPF BlockDialog modal
+                    var dialog = new BlockDialog(result, docName);
+                    bool? dialogRes = dialog.ShowDialog();
+                    userOverridden = dialog.UserOverridden;
+                    overrideReason = dialog.OverrideReason;
+                }
+                catch (Exception)
+                {
+                    userOverridden = false;
+                }
+
+                if (userOverridden)
+                {
+                    // User supplied valid override justification -> allow save to proceed!
+                    Cancel = false;
+                    try
+                    {
+                        _apiClient.LogEnforcement(docPath, result.tier, "override", true, overrideReason, entitySummary, "Office Add-in (Word)", "Word", entitySummary);
+                    }
+                    catch { }
                 }
                 else
                 {
                     // Save remains blocked
                     Cancel = true;
-                    _apiClient.LogEnforcement(docPath, result.tier, "block", false, string.Empty, entitySummary, "Office Add-in (Word)");
+                    try
+                    {
+                        _apiClient.LogEnforcement(docPath, result.tier, "block", false, string.Empty, entitySummary, "Office Add-in (Word)", "Word", entitySummary);
+                    }
+                    catch { }
                 }
             }
             // 4. Handle Warn Action

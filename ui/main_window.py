@@ -142,6 +142,20 @@ class MainWindow(QMainWindow):
         lbl_privacy_badge = QLabel("🛡️ AIR-GAPPED ENVIRONMENT: ZERO TELEMETRY • LOCAL ENGINES", top_bar)
         lbl_privacy_badge.setObjectName("badgeOffline")
 
+        # Live Service Status & Quick Control
+        self.lbl_top_service_status = QLabel("  🔴 SERVICE: OFFLINE  ", top_bar)
+        self.lbl_top_service_status.setFixedHeight(28)
+        self.lbl_top_service_status.setStyleSheet(
+            "background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #ef4444; border-radius: 6px; padding: 0 10px; font-weight: 700; font-size: 11px;"
+        )
+
+        self.btn_top_service_toggle = QPushButton("▶ Start Service", top_bar)
+        self.btn_top_service_toggle.setFixedHeight(28)
+        self.btn_top_service_toggle.setStyleSheet(
+            "background: #059669; color: #ffffff; border-radius: 6px; padding: 0 12px; font-weight: 700; font-size: 11px;"
+        )
+        self.btn_top_service_toggle.clicked.connect(self._on_top_service_toggle)
+
         # 1-Click Dark/Light Theme Switcher
         self.btn_theme_toggle = QPushButton("🌙 Dark Mode", top_bar)
         self.btn_theme_toggle.setObjectName("themeToggleButton")
@@ -149,6 +163,8 @@ class MainWindow(QMainWindow):
 
         top_bar_layout.addWidget(lbl_privacy_badge)
         top_bar_layout.addStretch()
+        top_bar_layout.addWidget(self.lbl_top_service_status)
+        top_bar_layout.addWidget(self.btn_top_service_toggle)
         top_bar_layout.addWidget(self.btn_theme_toggle)
         content_layout.addWidget(top_bar)
 
@@ -212,9 +228,48 @@ class MainWindow(QMainWindow):
         if is_active:
             self.lbl_live_status.setText("• SaveGuard: Active")
             self.lbl_live_status.setStyleSheet("font-size: 11px; color: #34d399; font-weight: 600;")
+            if hasattr(self, "lbl_top_service_status"):
+                self.lbl_top_service_status.setText("  🟢 SERVICE: ACTIVE  ")
+                self.lbl_top_service_status.setStyleSheet(
+                    "background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid #10b981; border-radius: 6px; padding: 0 10px; font-weight: 700; font-size: 11px;"
+                )
+            if hasattr(self, "btn_top_service_toggle"):
+                self.btn_top_service_toggle.setText("⏹ Stop Service")
+                self.btn_top_service_toggle.setStyleSheet(
+                    "background: #dc2626; color: #ffffff; border-radius: 6px; padding: 0 12px; font-weight: 700; font-size: 11px;"
+                )
         else:
             self.lbl_live_status.setText("• SaveGuard: Offline")
             self.lbl_live_status.setStyleSheet("font-size: 11px; color: #f87171; font-weight: 600;")
+            if hasattr(self, "lbl_top_service_status"):
+                self.lbl_top_service_status.setText("  🔴 SERVICE: OFFLINE  ")
+                self.lbl_top_service_status.setStyleSheet(
+                    "background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #ef4444; border-radius: 6px; padding: 0 10px; font-weight: 700; font-size: 11px;"
+                )
+            if hasattr(self, "btn_top_service_toggle"):
+                self.btn_top_service_toggle.setText("▶ Start Service")
+                self.btn_top_service_toggle.setStyleSheet(
+                    "background: #059669; color: #ffffff; border-radius: 6px; padding: 0 12px; font-weight: 700; font-size: 11px;"
+                )
+
+    def _on_top_service_toggle(self) -> None:
+        """Toggle service state from the top utility bar."""
+        from service.enforcement_policy import policy_manager
+        from service.service_controller import ServiceController
+
+        is_running = ServiceController.is_running(policy_manager.api_port)
+        if is_running:
+            self.btn_top_service_toggle.setEnabled(False)
+            self.lbl_top_service_status.setText("  🟡 STOPPING...  ")
+            ServiceController.stop(policy_manager.api_port)
+            self.btn_top_service_toggle.setEnabled(True)
+            self.view_live._check_service_status()
+        else:
+            self.btn_top_service_toggle.setEnabled(False)
+            self.lbl_top_service_status.setText("  🟡 STARTING...  ")
+            ServiceController.start(policy_manager.api_port)
+            self.btn_top_service_toggle.setEnabled(True)
+            self.view_live._check_service_status()
 
     def _toggle_theme(self) -> None:
         """Instant 1-click toggle between Dark and Light mode."""

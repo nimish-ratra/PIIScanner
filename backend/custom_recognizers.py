@@ -466,3 +466,18 @@ def get_custom_recognizers() -> List[PatternRecognizer]:
         PrivateKeyRecognizer(),
         JwtTokenRecognizer()
     ]
+
+
+ALL_SUPPORTED_ENTITIES: List[str] = [
+    "IN_AADHAAR", "IN_PAN", "IN_GSTIN", "IN_IFSC", "IN_PASSPORT", "IN_VOTER_ID",
+    "AWS_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY", "GOOGLE_API_KEY", "SLACK_TOKEN", "PRIVATE_KEY", "JWT_TOKEN",
+    "CREDIT_CARD", "CRYPTO", "IBAN_CODE", "US_BANK_NUMBER",
+    "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION", "DATE_TIME", "AGE", "IP_ADDRESS", "URL", "NRP", "MEDICAL_LICENSE", "US_SSN", "US_PASSPORT",
+    "US_DRIVER_LICENSE", "US_ITIN", "UK_NHS", "ES_NIF", "IT_FISCAL_CODE", "IT_DRIVER_LICENSE", "IT_PASSPORT"
+]
+
+
+def get_all_supported_entities() -> List[str]:
+    """Return the canonical list of all 36 supported Presidio and custom entities."""
+    return list(ALL_SUPPORTED_ENTITIES)
+

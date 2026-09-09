@@ -96,10 +96,15 @@ class PiiSelectorDialog(QDialog):
         self,
         all_entities: List[str],
         selected_entities: Optional[List[str]],
-        parent: Optional[QWidget] = None
+        parent: Optional[QWidget] = None,
+        mode: str = "batch"
     ):
         super().__init__(parent)
-        self.setWindowTitle("Configure PII Detection Types - PII Sentinel")
+        self.mode = mode
+        if mode == "realtime":
+            self.setWindowTitle("Configure Real-Time Detection Types - PII Sentinel")
+        else:
+            self.setWindowTitle("Configure PII Detection Types - PII Sentinel")
         self.resize(780, 600)
         self.setMinimumSize(680, 500)
         self.setModal(True)
@@ -138,12 +143,20 @@ class PiiSelectorDialog(QDialog):
         # 1. Header with title and explanation
         header_box = QHBoxLayout()
         header_text = QVBoxLayout()
-        title_lbl = QLabel("Configure Detection Entities", self)
-        title_lbl.setStyleSheet("font-size: 16px; font-weight: 700; color: #f8fafc;")
-        sub_lbl = QLabel(
-            "Select which PII identifiers, India-specific credentials, and Developer secrets to scan for.",
-            self
-        )
+        if self.mode == "realtime":
+            title_lbl = QLabel("Configure Real-Time Detection Entities", self)
+            title_lbl.setStyleSheet("font-size: 16px; font-weight: 700; color: #f8fafc;")
+            sub_lbl = QLabel(
+                "Select which PII identifiers trigger real-time pre-save blocks in Office and file quarantine.",
+                self
+            )
+        else:
+            title_lbl = QLabel("Configure Detection Entities", self)
+            title_lbl.setStyleSheet("font-size: 16px; font-weight: 700; color: #f8fafc;")
+            sub_lbl = QLabel(
+                "Select which PII identifiers, India-specific credentials, and Developer secrets to scan for.",
+                self
+            )
         sub_lbl.setStyleSheet("color: #94a3b8; font-size: 12px;")
         header_text.addWidget(title_lbl)
         header_text.addWidget(sub_lbl)
@@ -541,10 +554,11 @@ class PiiViewerDialog(QDialog):
     def __init__(
         self,
         active_entities: List[str],
-        parent: Optional[QWidget] = None
+        parent: Optional[QWidget] = None,
+        title: Optional[str] = None
     ):
         super().__init__(parent)
-        self.setWindowTitle("Current Active PII Detection Types - PII Sentinel")
+        self.setWindowTitle(title or "Current Active PII Detection Types - PII Sentinel")
         self.resize(700, 520)
         self.setModal(True)
 

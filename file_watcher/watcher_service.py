@@ -190,7 +190,13 @@ class FileWatcherService:
 
             # 2. Analyze PII
             detector = PresidioDetector.get_instance()
-            findings = detector.analyze_text(text, score_threshold=0.40)
+            raw_findings = detector.analyze_text(text, score_threshold=0.40)
+            if not raw_findings:
+                return
+
+            # Filter to active real-time entity selection
+            realtime_entities = set(config_manager.realtime_selected_entities)
+            findings = [f for f in raw_findings if f.get("entity") in realtime_entities]
             if not findings:
                 return
 
@@ -233,7 +239,9 @@ class FileWatcherService:
                     "user_override": 0,
                     "override_reason": "",
                     "entity_summary": summary,
-                    "source": "File Watcher"
+                    "source": "File Watcher",
+                    "detection_types": ", ".join(entity_counts.keys()),
+                    "app_source": "Filesystem Watcher"
                 })
                 if policy_manager.toast_notifications:
                     toast_notifier.notify(

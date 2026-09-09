@@ -84,18 +84,19 @@
             </ListBox>
         </GroupBox>
 
-        <!-- Override Expander -->
-        <Expander x:Name="ExpOverride" Grid.Row="3" Header="⚠️ Override &amp; Save Anyway (Requires Justification)" Foreground="#fbbf24" Margin="0,0,0,16">
-            <Border Background="#1e293b" BorderBrush="#d97706" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,6,0,0">
-                <StackPanel>
-                    <TextBlock Text="Enter reason for overriding the corporate security policy (logged to audit trail):" Foreground="#fef3c7" FontSize="11" Margin="0,0,0,6"/>
-                    <TextBox x:Name="TxtOverrideReason" Height="48" TextWrapping="Wrap" Background="#0f172a" Foreground="#f8fafc"
-                             BorderBrush="#475569" Padding="6" TextChanged="TxtOverrideReason_TextChanged"/>
-                    <Button x:Name="BtnConfirmOverride" Content="Confirm Override &amp; Save" HorizontalAlignment="Right" Margin="0,8,0,0"
-                            Background="#b45309" BorderBrush="#d97706" Foreground="#ffffff" IsEnabled="False" Click="BtnConfirmOverride_Click"/>
-                </StackPanel>
-            </Border>
-        </Expander>
+        <!-- Override Section -->
+        <Border Grid.Row="3" Background="#1e293b" BorderBrush="#d97706" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,14">
+            <StackPanel>
+                <Grid Margin="0,0,0,6">
+                    <TextBlock Text="⚠️ Override &amp; Save Anyway (Audit Justification Required):" Foreground="#fbbf24" FontWeight="SemiBold" FontSize="12"/>
+                    <TextBlock x:Name="TxtCharCount" Text="0 / 5 chars min" HorizontalAlignment="Right" Foreground="#94a3b8" FontSize="11"/>
+                </Grid>
+                <TextBox x:Name="TxtOverrideReason" Height="44" TextWrapping="Wrap" Background="#0f172a" Foreground="#f8fafc"
+                         BorderBrush="#475569" Padding="6" TextChanged="TxtOverrideReason_TextChanged"
+                         ToolTip="Enter business rationale for security audit trail (e.g. Authorized emergency report)"/>
+                <TextBlock x:Name="TxtValidationMsg" Text="" Foreground="#f87171" FontSize="11" Margin="0,4,0,0" Visibility="Collapsed"/>
+            </StackPanel>
+        </Border>
 
         <!-- Actions -->
         <Grid Grid.Row="4">
@@ -103,9 +104,11 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <Button x:Name="BtnOpenApp" Content="🔍 Open in PII Sentinel" Background="#1e293b" BorderBrush="#3b82f6" Foreground="#60a5fa" Click="BtnOpenApp_Click"/>
-            <Button x:Name="BtnCancel" Grid.Column="2" Content="Cancel Save" Background="#ef4444" BorderBrush="#b91c1c" Foreground="#ffffff" IsDefault="True" Click="BtnCancel_Click"/>
+            <Button x:Name="BtnConfirmOverride" Grid.Column="2" Content="⚠️ Save Anyway (Override)" Background="#b45309" BorderBrush="#d97706" Foreground="#ffffff" Margin="0,0,10,0" Click="BtnConfirmOverride_Click"/>
+            <Button x:Name="BtnCancel" Grid.Column="3" Content="Cancel Save" Background="#ef4444" BorderBrush="#b91c1c" Foreground="#ffffff" IsDefault="True" Click="BtnCancel_Click"/>
         </Grid>
     </Grid>
 </Window>

@@ -317,16 +317,18 @@ class ScanView(QWidget):
 
         # Metric Cards Grid (Guaranteed minimum dimensions, never collapses)
         metrics_layout = QHBoxLayout()
-        metrics_layout.setSpacing(14)
+        metrics_layout.setSpacing(12)
 
         self.card_scanned = StatCard("Files Scanned", "0", "#38bdf8", "📁", progress_box)
         self.card_flagged = StatCard("Files with PII", "0", "#f87171", "⚠️", progress_box)
         self.card_findings = StatCard("Total Findings", "0", "#fbbf24", "🔍", progress_box)
+        self.card_rate = StatCard("Scan Rate", "0 f/s", "#a855f7", "⚡", progress_box)
         self.card_time = StatCard("Elapsed Time", "0.0s", "#34d399", "⏱️", progress_box)
 
         metrics_layout.addWidget(self.card_scanned)
         metrics_layout.addWidget(self.card_flagged)
         metrics_layout.addWidget(self.card_findings)
+        metrics_layout.addWidget(self.card_rate)
         metrics_layout.addWidget(self.card_time)
 
         progress_vbox.addLayout(metrics_layout)
@@ -566,6 +568,7 @@ class ScanView(QWidget):
         self.card_scanned.set_value("0")
         self.card_flagged.set_value("0")
         self.card_findings.set_value("0")
+        self.card_rate.set_value("0 f/s")
         self.card_time.set_value("0.0s")
         self.lbl_current_file.setText(f"Initializing scan for {folder}...")
         self.log_viewer.clear()
@@ -628,6 +631,8 @@ class ScanView(QWidget):
         self.progress_bar.setValue(pct)
         self.card_scanned.set_value(f"{scanned}/{total}")
         self.card_time.set_value(f"{elapsed:.1f}s")
+        rate_str = f"{(scanned / elapsed):.1f} f/s" if elapsed > 0.5 and scanned > 0 else "—"
+        self.card_rate.set_value(rate_str)
         # Format filename to fit
         display_name = os.path.basename(current_file)
         self.lbl_current_file.setText(f"Scanning: {display_name}")
@@ -644,10 +649,13 @@ class ScanView(QWidget):
 
     def _on_worker_finished(self, summary: dict) -> None:
         self.progress_bar.setValue(100)
-        self.card_scanned.set_value(str(summary.get("files_scanned", 0)))
+        scanned = summary.get("files_scanned", 0)
+        dur = summary.get('duration_seconds', 0)
+        self.card_scanned.set_value(str(scanned))
         self.card_flagged.set_value(str(summary.get("files_with_pii", 0)))
         self.card_findings.set_value(str(summary.get("total_findings", 0)))
-        self.card_time.set_value(f"{summary.get('duration_seconds', 0):.1f}s")
+        self.card_time.set_value(f"{dur:.1f}s")
+        self.card_rate.set_value(f"{(scanned / dur):.1f} f/s" if dur > 0 else "—")
         highest_tier = summary.get("highest_classification", "")
         if highest_tier:
             self.lbl_current_file.setText(f"Scan finished: {summary.get('status', 'done').upper()}  |  Highest Sensitivity: {highest_tier}")

@@ -120,7 +120,7 @@ namespace PIISentinel.OfficeAddin
             }
         }
 
-        public bool LogEnforcement(string filePath, string tier, string actionTaken, bool userOverride, string overrideReason, string entitySummary, string source)
+        public bool LogEnforcement(string filePath, string tier, string actionTaken, bool userOverride, string overrideReason, string entitySummary, string source, string appSource = "Office Add-in", string detectionTypes = "")
         {
             try
             {
@@ -137,7 +137,9 @@ namespace PIISentinel.OfficeAddin
                     { "user_override", userOverride },
                     { "override_reason", overrideReason ?? "" },
                     { "entity_summary", entitySummary ?? "" },
-                    { "source", source ?? "Office Add-in" }
+                    { "source", source ?? "Office Add-in" },
+                    { "app_source", appSource ?? source ?? "Office Add-in" },
+                    { "detection_types", detectionTypes ?? "" }
                 };
 
                 byte[] bodyBytes = Encoding.UTF8.GetBytes(_serializer.Serialize(payload));

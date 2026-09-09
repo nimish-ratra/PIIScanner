@@ -19,7 +19,8 @@ DEFAULT_EXTENSIONS = [
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "confidence_threshold": 0.6,
-    "selected_entities": [],  # Empty list indicates all available entities selected
+    "selected_entities": [],  # Empty list indicates all available entities selected (Batch Scans)
+    "realtime_selected_entities": None,  # None indicates all 36 entities active on first run
     "supported_extensions": DEFAULT_EXTENSIONS,
     "default_output_folder": "",
     "max_file_size_mb": 50,
@@ -132,6 +133,18 @@ class ConfigManager:
     @selected_entities.setter
     def selected_entities(self, entities: List[str]) -> None:
         self.set("selected_entities", entities)
+
+    @property
+    def realtime_selected_entities(self) -> List[str]:
+        val = self._config.get("realtime_selected_entities")
+        if val is None:
+            from backend.custom_recognizers import get_all_supported_entities
+            return list(get_all_supported_entities())
+        return list(val)
+
+    @realtime_selected_entities.setter
+    def realtime_selected_entities(self, entities: List[str]) -> None:
+        self.set("realtime_selected_entities", list(entities))
 
     @property
     def default_output_folder(self) -> str:

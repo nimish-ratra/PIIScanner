@@ -45,13 +45,41 @@ class ServiceController:
         return cls.get_health(port).get("running", False)
 
     @classmethod
+    def is_port_bound(cls, port: int = DEFAULT_PORT) -> bool:
+        """Check if port 47821 has any listening socket bound."""
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            try:
+                s.bind(("127.0.0.1", port))
+                return False
+            except OSError:
+                return True
+
+    @classmethod
+    def _cleanup_port(cls, port: int = DEFAULT_PORT) -> None:
+        """Kill any process holding the port on Windows."""
+        if sys.platform == "win32":
+            try:
+                cmd = f'powershell -Command "Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force }}"'
+                subprocess.run(cmd, shell=True, timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                logger.warning(f"Port cleanup warning: {e}")
+
+    @classmethod
     def start(cls, port: int = DEFAULT_PORT) -> bool:
         """
         Start the service runner in a detached background process.
-        Returns True if service is alive and healthy.
+        Idempotent: returns True immediately if already running and healthy.
         """
         if cls.is_running(port):
             return True
+
+        # If port is bound by a zombie process that isn't responding to /health, clean it
+        if cls.is_port_bound(port):
+            logger.info(f"Port {port} bound by unresponsive process; clearing before start.")
+            cls._cleanup_port(port)
+            time.sleep(0.5)
 
         project_root = Path(__file__).parent.parent.resolve()
         python_exe = sys.executable
@@ -73,8 +101,8 @@ class ServiceController:
                 stderr=subprocess.DEVNULL,
             )
 
-            # Wait up to 6 seconds for health endpoint to respond
-            for _ in range(30):
+            # Wait up to 8 seconds for health endpoint to respond
+            for _ in range(40):
                 time.sleep(0.2)
                 if cls.is_running(port):
                     logger.info(f"Service started successfully on port {port} (PID: {cls._process.pid})")
@@ -87,13 +115,42 @@ class ServiceController:
     @classmethod
     def stop(cls, port: int = DEFAULT_PORT) -> bool:
         """
-        Stop the background service by terminating the process and freeing port 47821.
+        Stop the background service gracefully and idempotently.
+        Tears down both Uvicorn and Watchdog observer.
         Returns True if service has stopped.
         """
+        # If already completely stopped and port free, return True immediately
+        if not cls.is_running(port) and not cls.is_port_bound(port):
+            cls._process = None
+            return True
+
+        # 1. Attempt graceful HTTP call to /service/stop
+        if cls.is_running(port):
+            try:
+                url = f"http://127.0.0.1:{port}/service/stop"
+                req = urllib.request.Request(
+                    url,
+                    data=b"{}",
+                    headers={"Content-Type": "application/json", "User-Agent": "PIISentinel-Controller"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    pass
+            except Exception:
+                pass
+
+        # Wait up to 1.5s for graceful HTTP shutdown
+        for _ in range(15):
+            time.sleep(0.1)
+            if not cls.is_running(port) and not cls.is_port_bound(port):
+                cls._process = None
+                return True
+
+        # 2. Terminate tracked subprocess if still alive
         if cls._process:
             try:
                 cls._process.terminate()
-                cls._process.wait(timeout=1.5)
+                cls._process.wait(timeout=1.0)
             except Exception:
                 try:
                     cls._process.kill()
@@ -101,14 +158,16 @@ class ServiceController:
                     pass
             cls._process = None
 
-        if sys.platform == "win32":
-            try:
-                cmd = f'powershell -Command "Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force }}"'
-                subprocess.run(cmd, shell=True, timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception as e:
-                logger.warning(f"Port cleanup warning: {e}")
+        # 3. If port is STILL bound, force cleanup via PowerShell
+        if cls.is_port_bound(port):
+            cls._cleanup_port(port)
 
-        time.sleep(0.5)
+        # 4. Final verification polling
+        for _ in range(20):
+            if not cls.is_running(port) and not cls.is_port_bound(port):
+                return True
+            time.sleep(0.1)
+
         return not cls.is_running(port)
 
     @classmethod

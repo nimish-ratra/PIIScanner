@@ -25,6 +25,10 @@ from PySide6.QtGui import QColor
 from backend.config import config_manager, DEFAULT_EXTENSIONS
 from backend.tika_extractor import check_java_status, check_tesseract_status
 from backend.classifier import TIER_METADATA, SensitivityTier
+from backend.custom_recognizers import get_all_supported_entities
+from ui.components.pii_selector_dialog import (
+    PiiSelectorDialog, PiiViewerDialog, ENTITY_CATEGORIES
+)
 from service.enforcement_policy import (
     policy_manager, DEFAULT_TIER_ACTIONS, get_default_watched_folders, EnforcementAction
 )
@@ -265,6 +269,70 @@ class SettingsView(QWidget):
         notice_lbl.setStyleSheet("color: #e2e8f0; font-size: 12px; line-height: 1.4;")
         notice_layout.addWidget(notice_lbl)
         layout.addWidget(notice_box)
+
+        # 0. Real-Time Detection Types Card
+        grp_rt_types = QGroupBox("Real-Time Detection Types", container)
+        vbox_rt_types = QVBoxLayout(grp_rt_types)
+        vbox_rt_types.setSpacing(10)
+
+        rt_hdr_row = QHBoxLayout()
+        rt_hdr_lbl = QLabel("Active Pre-Save & Quarantine Entity Scope:", grp_rt_types)
+        rt_hdr_lbl.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: 600;")
+
+        self.lbl_rt_selected_count = QLabel("All 36 Types Active", grp_rt_types)
+        self.lbl_rt_selected_count.setStyleSheet(
+            "background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); "
+            "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px;"
+        )
+        rt_hdr_row.addWidget(rt_hdr_lbl)
+        rt_hdr_row.addStretch()
+        rt_hdr_row.addWidget(self.lbl_rt_selected_count)
+        vbox_rt_types.addLayout(rt_hdr_row)
+
+        self.card_rt_category_summary = QWidget(grp_rt_types)
+        self.card_rt_category_summary.setStyleSheet(
+            "background-color: #0d1322; border: 1px solid #1e293b; border-radius: 8px;"
+        )
+        rt_card_layout = QVBoxLayout(self.card_rt_category_summary)
+        rt_card_layout.setContentsMargins(12, 10, 12, 10)
+        rt_card_layout.setSpacing(6)
+
+        self.lbl_rt_category_summary = QLabel(self.card_rt_category_summary)
+        self.lbl_rt_category_summary.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: 500;")
+        self.lbl_rt_category_summary.setWordWrap(True)
+        rt_card_layout.addWidget(self.lbl_rt_category_summary)
+
+        rt_note_lbl = QLabel("Governs Office Word/Excel pre-save blocking and filesystem watcher quarantine.", self.card_rt_category_summary)
+        rt_note_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
+        rt_card_layout.addWidget(rt_note_lbl)
+
+        vbox_rt_types.addWidget(self.card_rt_category_summary)
+
+        rt_btn_row = QHBoxLayout()
+        rt_btn_row.setSpacing(10)
+
+        self.btn_rt_view_entities = QPushButton("👁️ View Current Real-Time Types", grp_rt_types)
+        self.btn_rt_view_entities.setFixedHeight(34)
+        self.btn_rt_view_entities.setStyleSheet(
+            "background-color: #162036; color: #f1f5f9; border: 1px solid #2a3b5c; "
+            "border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600;"
+        )
+        self.btn_rt_view_entities.clicked.connect(self._on_rt_view_entities)
+
+        self.btn_rt_edit_entities = QPushButton("⚙️ Edit Real-Time Types...", grp_rt_types)
+        self.btn_rt_edit_entities.setFixedHeight(34)
+        self.btn_rt_edit_entities.setStyleSheet(
+            "background-color: #2563eb; color: #ffffff; border: 1px solid #3b82f6; "
+            "border-radius: 6px; padding: 6px 16px; font-size: 12px; font-weight: 700;"
+        )
+        self.btn_rt_edit_entities.clicked.connect(self._on_rt_edit_entities)
+
+        rt_btn_row.addWidget(self.btn_rt_view_entities)
+        rt_btn_row.addWidget(self.btn_rt_edit_entities)
+        rt_btn_row.addStretch()
+        vbox_rt_types.addLayout(rt_btn_row)
+
+        layout.addWidget(grp_rt_types)
 
         # 1. Tier Action Mapping Card
         grp_tiers = QGroupBox("Purview Sensitivity Tier Actions", container)
@@ -605,6 +673,75 @@ class SettingsView(QWidget):
         # Quarantine archive path
         self.edit_quarantine_path.setText(policy_manager.quarantine_archive_path)
 
+        self._update_rt_entities_summary()
+
+    def _update_rt_entities_summary(self) -> None:
+        all_ents = get_all_supported_entities()
+        active_ents = config_manager.realtime_selected_entities
+        active_set = set(active_ents)
+
+        total = len(all_ents)
+        sel_count = len(active_ents)
+
+        if sel_count == total:
+            self.lbl_rt_selected_count.setText(f"All {total} Types Active")
+            self.lbl_rt_selected_count.setStyleSheet(
+                "background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); "
+                "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px;"
+            )
+        else:
+            self.lbl_rt_selected_count.setText(f"{sel_count} of {total} Types Active")
+            self.lbl_rt_selected_count.setStyleSheet(
+                "background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); "
+                "border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px;"
+            )
+
+        chips = []
+        for cat_name, cat_data in ENTITY_CATEGORIES.items():
+            cat_ents = [e for e, _ in cat_data["entities"] if e in all_ents]
+            if not cat_ents:
+                continue
+            act_count = sum(1 for e in cat_ents if e in active_set)
+            chips.append(f"{cat_data['badge']}: {act_count}/{len(cat_ents)}")
+
+        self.lbl_rt_category_summary.setText("   •   ".join(chips))
+
+    def _on_rt_view_entities(self) -> None:
+        dlg = PiiViewerDialog(config_manager.realtime_selected_entities, self, title="Active Real-Time PII Entities - PII Sentinel")
+        dlg.exec()
+
+    def _on_rt_edit_entities(self) -> None:
+        all_ents = get_all_supported_entities()
+        current = config_manager.realtime_selected_entities
+        dlg = PiiSelectorDialog(all_ents, current, self, mode="realtime")
+        if dlg.exec():
+            selected = dlg.get_selected_entities()
+            config_manager.realtime_selected_entities = selected
+            config_manager.save()
+            self._update_rt_entities_summary()
+            self._push_policy_live()
+
+    def _push_policy_live(self) -> None:
+        """Push policy updates (including realtime_selected_entities) to running background microservice immediately."""
+        port = policy_manager.api_port
+        url = f"http://127.0.0.1:{port}/policy"
+        try:
+            payload = json.dumps({
+                "realtime_selected_entities": config_manager.realtime_selected_entities,
+                "tier_actions": policy_manager.tier_actions,
+                "fail_open": policy_manager.fail_open
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json", "User-Agent": "PIISentinel-UI"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                pass
+        except Exception:
+            pass
+
     def save_enforcement_settings(self) -> None:
         """Save enforcement policy settings to enforcement_policy.json."""
         # Tiers
@@ -627,6 +764,7 @@ class SettingsView(QWidget):
         policy_manager.quarantine_archive_path = self.edit_quarantine_path.text().strip()
 
         policy_manager.save()
+        self._push_policy_live()
         QMessageBox.information(self, "Enforcement Policy Saved", "Real-time enforcement policy updated successfully.")
 
     def reset_enforcement_defaults(self) -> None:

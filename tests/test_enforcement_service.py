@@ -179,6 +179,57 @@ class TestEnforcementService(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertIn("Non-loopback client rejected", response.text)
 
+    def test_10_enforcement_log_override_persistence(self):
+        """Regression test for Feature 3: POST /enforcement/log with override records user_override=1 and rationale."""
+        from backend.database import db_manager
+        override_payload = {
+            "file_path": r"C:\Users\Nimish\Documents\quarterly_override.docx",
+            "tier": "Highly Confidential",
+            "action_taken": "override",
+            "user_override": True,
+            "override_reason": "Executive business rationale approved by CISO",
+            "entity_summary": "IN_AADHAAR: 1",
+            "source": "Office Add-in (Word)",
+            "app_source": "Word",
+            "detection_types": "IN_AADHAAR"
+        }
+        resp = self.client.post("/enforcement/log", json=override_payload)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data.get("success"))
+        ev_id = data.get("event_id")
+        self.assertIsNotNone(ev_id)
+
+        # Query database and verify exact override fields
+        events = db_manager.get_enforcement_events(limit=50, action="override")
+        matched = [e for e in events if e.get("id") == ev_id]
+        self.assertEqual(len(matched), 1)
+        ev = matched[0]
+        self.assertEqual(ev["user_override"], 1)
+        self.assertEqual(ev["action_taken"], "override")
+        self.assertEqual(ev["override_reason"], "Executive business rationale approved by CISO")
+        self.assertEqual(ev["app_source"], "Word")
+        self.assertEqual(ev["detection_types"], "IN_AADHAAR")
+
+    def test_11_service_stop_endpoint(self):
+        """Verify POST /service/stop returns 200 and triggers shutdown sequence."""
+        resp = self.client.post("/service/stop")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("message"), "Service shutdown initiated")
+
+    def test_12_service_controller_methods(self):
+        """Verify ServiceController port check, health check, and idempotent stop."""
+        from service.service_controller import ServiceController
+        # Unused port 59999
+        unused_port = 59999
+        self.assertFalse(ServiceController.is_port_bound(unused_port))
+        self.assertFalse(ServiceController.is_running(unused_port))
+        # Idempotent stop on stopped port should return True
+        self.assertTrue(ServiceController.stop(unused_port))
+
 
 if __name__ == "__main__":
     unittest.main()
+

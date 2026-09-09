@@ -77,6 +77,7 @@ class EnforcementServiceRunner:
 
     def start_api_server(self) -> None:
         """Start FastAPI uvicorn server in a dedicated thread bound to 127.0.0.1."""
+        app.state.runner = self
         config = uvicorn.Config(
             app=app,
             host="127.0.0.1",

@@ -124,20 +124,19 @@ QScrollArea > QWidget > QWidget {
     background-color: #0f172a;
     border: 1px solid #1e293b;
     border-radius: 10px;
-    padding: 18px 16px 16px 16px;
-    margin-top: 12px;
+    padding: 20px 16px 16px 16px;
+    margin-top: 14px;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 2px 10px;
+    padding: 0 8px;
     color: #38bdf8;
     font-weight: 700;
     font-size: 13px;
-    background-color: #131d33;
-    border: 1px solid #1e293b;
-    border-radius: 6px;
+    background-color: transparent;
+    border: none;
 }
 
 /* Metric Stats Cards */
@@ -605,20 +604,19 @@ QScrollArea > QWidget > QWidget {
     background-color: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 10px;
-    padding: 18px 16px 16px 16px;
-    margin-top: 12px;
+    padding: 20px 16px 16px 16px;
+    margin-top: 14px;
 }
 
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 2px 10px;
-    color: #1d4ed8;
+    padding: 0 8px;
+    color: #0f172a;
     font-weight: 700;
     font-size: 13px;
-    background-color: #eff6ff;
-    border: 1px solid #bfdbfe;
-    border-radius: 6px;
+    background-color: transparent;
+    border: none;
 }
 
 /* Metric Stats Cards */

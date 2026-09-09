@@ -52,15 +52,45 @@ namespace PIISentinel.OfficeAddin
 
         private void TxtOverrideReason_TextChanged(object sender, TextChangedEventArgs e)
         {
-            BtnConfirmOverride.IsEnabled = !string.IsNullOrWhiteSpace(TxtOverrideReason.Text) && TxtOverrideReason.Text.Trim().Length >= 5;
+            string txt = TxtOverrideReason.Text ?? string.Empty;
+            int len = txt.Trim().Length;
+            if (len >= 5)
+            {
+                TxtCharCount.Text = len + " chars (Valid)";
+                TxtCharCount.Foreground = new SolidColorBrush(Color.FromRgb(52, 211, 153));
+                BtnConfirmOverride.Background = new SolidColorBrush(Color.FromRgb(217, 119, 6));
+                TxtValidationMsg.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                TxtCharCount.Text = len + " / 5 chars min";
+                TxtCharCount.Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184));
+                BtnConfirmOverride.Background = new SolidColorBrush(Color.FromRgb(180, 83, 9));
+            }
         }
 
         private void BtnConfirmOverride_Click(object sender, RoutedEventArgs e)
         {
+            string reason = (TxtOverrideReason.Text ?? string.Empty).Trim();
+            if (reason.Length < 5)
+            {
+                TxtValidationMsg.Text = "Please enter at least 5 characters of justification to proceed with save.";
+                TxtValidationMsg.Visibility = Visibility.Visible;
+                TxtOverrideReason.Focus();
+                return;
+            }
+
             UserOverridden = true;
-            OverrideReason = TxtOverrideReason.Text.Trim();
-            DialogResult = true;
-            Close();
+            OverrideReason = reason;
+
+            try
+            {
+                DialogResult = true;
+            }
+            catch
+            {
+                Close();
+            }
         }
 
         private void BtnCancel_Click(object sender, RoutedEventArgs e)

@@ -100,9 +100,25 @@ class DatabaseManager:
                     user_override INTEGER DEFAULT 0,
                     override_reason TEXT,
                     entity_summary TEXT,
-                    source TEXT DEFAULT 'Generic'
+                    source TEXT DEFAULT 'Generic',
+                    detection_types TEXT,
+                    app_source TEXT DEFAULT 'Generic'
                 )
             """)
+
+            # Schema migration: ensure detection_types and app_source exist in existing enforcement_events tables
+            cursor.execute("PRAGMA table_info(enforcement_events)")
+            enf_cols = [row[1] for row in cursor.fetchall()]
+            if enf_cols and "detection_types" not in enf_cols:
+                try:
+                    cursor.execute("ALTER TABLE enforcement_events ADD COLUMN detection_types TEXT")
+                except Exception:
+                    pass
+            if enf_cols and "app_source" not in enf_cols:
+                try:
+                    cursor.execute("ALTER TABLE enforcement_events ADD COLUMN app_source TEXT DEFAULT 'Generic'")
+                except Exception:
+                    pass
 
             # Indices
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id)")
@@ -111,6 +127,7 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_timestamp ON enforcement_events(timestamp DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_tier ON enforcement_events(tier)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_action ON enforcement_events(action_taken)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_app_source ON enforcement_events(app_source)")
             conn.commit()
 
     def insert_scan(self, scan_data: Dict[str, Any], findings: List[Dict[str, Any]]) -> None:
@@ -224,13 +241,25 @@ class DatabaseManager:
 
     def insert_enforcement_event(self, event_data: Dict[str, Any]) -> int:
         """Insert a real-time enforcement event (block, quarantine, warn, allow, override)."""
+        det_types = event_data.get("detection_types")
+        if not det_types:
+            summary = event_data.get("entity_summary", "")
+            if summary:
+                parts = [p.split(":")[0].strip() for p in summary.split(",") if p.strip()]
+                det_types = ", ".join(parts)
+            else:
+                det_types = ""
+
+        app_src = event_data.get("app_source") or event_data.get("source", "Generic")
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO enforcement_events (
                     timestamp, file_path, tier, action_taken,
-                    user_override, override_reason, entity_summary, source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    user_override, override_reason, entity_summary, source,
+                    detection_types, app_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 event_data.get("timestamp"),
                 event_data.get("file_path", ""),
@@ -239,7 +268,9 @@ class DatabaseManager:
                 1 if event_data.get("user_override") else 0,
                 event_data.get("override_reason", ""),
                 event_data.get("entity_summary", ""),
-                event_data.get("source", "Generic")
+                event_data.get("source", "Generic"),
+                det_types,
+                app_src
             ))
             conn.commit()
             return cursor.lastrowid
@@ -248,20 +279,30 @@ class DatabaseManager:
         self,
         limit: int = 100,
         action: Optional[str] = None,
-        tier: Optional[str] = None
+        tier: Optional[str] = None,
+        source: Optional[str] = None,
+        search: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve recent enforcement events with optional action and tier filters."""
+        """Retrieve recent enforcement events with optional action, tier, source, and search filters."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             query = "SELECT * FROM enforcement_events"
             params = []
             conditions = []
-            if action:
-                conditions.append("action_taken = ?")
-                params.append(action)
-            if tier:
-                conditions.append("tier = ?")
-                params.append(tier)
+            if action and action.lower() != "all actions":
+                conditions.append("UPPER(action_taken) = ?")
+                params.append(action.upper())
+            if tier and tier.lower() != "all tiers":
+                conditions.append("UPPER(tier) = ?")
+                params.append(tier.upper())
+            if source and source.lower() not in ("all", "all sources"):
+                conditions.append("(UPPER(app_source) LIKE ? OR UPPER(source) LIKE ?)")
+                params.append(f"%{source.upper()}%")
+                params.append(f"%{source.upper()}%")
+            if search and search.strip():
+                conditions.append("file_path LIKE ?")
+                params.append(f"%{search.strip()}%")
+
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
             query += " ORDER BY timestamp DESC LIMIT ?"
@@ -270,6 +311,35 @@ class DatabaseManager:
             cursor.execute(query, tuple(params))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+
+    def export_enforcement_events_csv(
+        self,
+        filepath: str,
+        events: Optional[List[Dict[str, Any]]] = None
+    ) -> bool:
+        """Export enforcement events to a CSV audit log."""
+        import csv
+        import os
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+            if events is None:
+                events = self.get_enforcement_events(limit=5000)
+
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                fieldnames = [
+                    "id", "timestamp", "file_path", "app_source", "tier",
+                    "action_taken", "detection_types", "user_override",
+                    "override_reason", "entity_summary"
+                ]
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                for row in events:
+                    row_copy = dict(row)
+                    row_copy["user_override"] = "YES" if row_copy.get("user_override") else "NO"
+                    writer.writerow(row_copy)
+            return True
+        except Exception:
+            return False
 
     def delete_enforcement_event(self, event_id: int) -> bool:
         """Delete a single enforcement event by id."""
