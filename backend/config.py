@@ -192,11 +192,13 @@ class ConfigManager:
 
     @property
     def max_workers(self) -> int:
-        return max(1, min(int(self._config.get("max_workers", 2)), 8))
+        ceiling = max(8, min((os.cpu_count() or 4) * 2, 32))
+        return max(1, min(int(self._config.get("max_workers", 2)), ceiling))
 
     @max_workers.setter
     def max_workers(self, val: int) -> None:
-        self.set("max_workers", max(1, min(int(val), 8)))
+        ceiling = max(8, min((os.cpu_count() or 4) * 2, 32))
+        self.set("max_workers", max(1, min(int(val), ceiling)))
 
     @property
     def ocr_enabled(self) -> bool:

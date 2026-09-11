@@ -12,11 +12,11 @@ import sys
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 # Ensure project root is in python path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.config import get_logs_dir, config_manager
+from backend.service_auth import TOKEN_HEADER, verify_service_token
 from backend.presidio_detector import PresidioDetector, redact_value
 from backend.classifier import classify_document, classify_finding, SensitivityTier
 from backend.tika_extractor import TikaExtractor
@@ -100,6 +101,44 @@ class EnforcementLogRequest(BaseModel):
     app_source: Optional[str] = None
 
 
+class PolicyUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    realtime_selected_entities: Optional[List[str]] = None
+    tier_actions: Optional[Dict[str, str]] = None
+    fail_open: Optional[bool] = None
+    fail_safe_mode: Optional[Literal["fail-closed", "fail-open"]] = None
+    watched_folders: Optional[List[str]] = None
+    quarantine_archive_path: Optional[str] = None
+    quarantine_password: Optional[str] = None
+    enforce_office: Optional[bool] = None
+    enforce_watcher: Optional[bool] = None
+    toast_notifications: Optional[bool] = None
+    api_port: Optional[int] = None
+
+
+class RealtimeEntitiesUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    realtime_selected_entities: List[str]
+
+
+SECRET_POLICY_FIELDS = {"quarantine_password"}
+
+
+def redact_policy_dict(policy_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip or mask secret fields before returning to callers."""
+    redacted = dict(policy_data)
+    for field in SECRET_POLICY_FIELDS:
+        if field in redacted:
+            val = redacted[field]
+            if val:
+                redacted[field] = "********"
+            else:
+                redacted[field] = None
+    return redacted
+
+
 # -------------------------------------------------------------
 # FastAPI App & Security Middleware
 # -------------------------------------------------------------
@@ -123,11 +162,14 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def verify_loopback_only(request: Request, call_next):
+async def verify_loopback_and_auth(request: Request, call_next):
     """
-    Security Gate: Reject any request originating from non-loopback IP addresses.
-    Guarantee 100% air-gapped local confinement.
+    Two-Tier Security Gate:
+    1. Loopback IP Enforcement: Guarantee 100% air-gapped local confinement.
+    2. Shared-Secret Bearer Token Enforcement: Prevent unauthorized browser JS / local process CSRF.
+       Requires X-PIISentinel-Token matching %APPDATA%\\PIISentinel\\service_token.
     """
+    # Defense 1: Loopback IP verification
     client_host = request.client.host if request.client else ""
     if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
         logger.warning(f"Rejected non-loopback connection attempt from IP: {client_host}")
@@ -136,6 +178,17 @@ async def verify_loopback_only(request: Request, call_next):
             status_code=status.HTTP_403_FORBIDDEN,
             media_type="application/json"
         )
+
+    # Defense 2: Shared-secret token verification (required on all endpoints including /health)
+    provided_token = request.headers.get(TOKEN_HEADER)
+    if not verify_service_token(provided_token):
+        logger.warning(f"Rejected request to {request.url.path} from {client_host}: Missing or invalid {TOKEN_HEADER}")
+        return Response(
+            content='{"error": "Access Denied: Non-loopback client rejected. PII Sentinel is 100% local."}',
+            status_code=status.HTTP_403_FORBIDDEN,
+            media_type="application/json"
+        )
+
     return await call_next(request)
 
 
@@ -327,18 +380,27 @@ def log_enforcement_event(req: EnforcementLogRequest):
 
 @app.get("/policy")
 def get_policy():
-    """Retrieve active enforcement policy including real-time entity selection."""
+    """Retrieve active enforcement policy including real-time entity selection with secret fields redacted."""
     data = policy_manager.to_dict()
     data["realtime_selected_entities"] = config_manager.realtime_selected_entities
-    return data
+    return redact_policy_dict(data)
 
 
 @app.post("/policy")
-def update_policy(updates: Dict[str, Any]):
-    """Update active enforcement policy."""
+def update_policy(req: PolicyUpdateRequest):
+    """Update active enforcement policy with strict schema validation and forbidden extra fields."""
+    updates = req.model_dump(exclude_unset=True)
+
+    # Translate fail_safe_mode string if supplied
+    if "fail_safe_mode" in updates:
+        mode = updates.pop("fail_safe_mode")
+        updates["fail_open"] = (mode == "fail-open")
+
     if "realtime_selected_entities" in updates and isinstance(updates["realtime_selected_entities"], list):
         config_manager.realtime_selected_entities = updates["realtime_selected_entities"]
         logger.info(f"Real-time selected entities updated via /policy: {len(updates['realtime_selected_entities'])} active.")
+        updates.pop("realtime_selected_entities")
+
     policy_manager.update_from_dict(updates)
     logger.info("Enforcement policy updated via API.")
 
@@ -351,7 +413,7 @@ def update_policy(updates: Dict[str, Any]):
 
     data = policy_manager.to_dict()
     data["realtime_selected_entities"] = config_manager.realtime_selected_entities
-    return {"success": True, "policy": data}
+    return {"success": True, "policy": redact_policy_dict(data)}
 
 
 @app.get("/policy/realtime-entities")
@@ -361,12 +423,11 @@ def get_realtime_entities():
 
 
 @app.post("/policy/realtime-entities")
-def update_realtime_entities(req: Dict[str, Any]):
+def update_realtime_entities(req: RealtimeEntitiesUpdateRequest):
     """Update active real-time entity selection."""
-    entities = req.get("realtime_selected_entities")
-    if entities is not None and isinstance(entities, list):
-        config_manager.realtime_selected_entities = entities
-        logger.info(f"Real-time selected entities updated via /policy/realtime-entities: {len(entities)} active.")
+    entities = req.realtime_selected_entities
+    config_manager.realtime_selected_entities = entities
+    logger.info(f"Real-time selected entities updated via /policy/realtime-entities: {len(entities)} active.")
     return {"success": True, "realtime_selected_entities": config_manager.realtime_selected_entities}
 
 

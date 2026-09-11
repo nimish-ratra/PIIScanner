@@ -332,11 +332,16 @@ class LiveMonitoringView(QWidget):
             # Live propagate to running background service
             try:
                 import urllib.request, json
+                from backend.service_auth import TOKEN_HEADER, get_or_create_service_token
                 payload = json.dumps({"realtime_selected_entities": selected}).encode("utf-8")
                 req = urllib.request.Request(
                     f"http://127.0.0.1:{policy_manager.api_port}/policy/realtime-entities",
                     data=payload,
-                    headers={"Content-Type": "application/json", "User-Agent": "PIISentinel-LiveUI"},
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "PIISentinel-LiveUI",
+                        TOKEN_HEADER: get_or_create_service_token()
+                    },
                     method="POST"
                 )
                 with urllib.request.urlopen(req, timeout=1.0):

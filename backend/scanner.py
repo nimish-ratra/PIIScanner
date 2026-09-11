@@ -59,7 +59,8 @@ class Scanner:
         self.confidence_threshold = confidence_threshold
         self.selected_entities = selected_entities
         self.max_file_size_mb = max_file_size_mb
-        self.max_workers = max(1, min(int(max_workers), 8))
+        worker_ceiling = max(8, min((os.cpu_count() or 4) * 2, 32))
+        self.max_workers = max(1, min(int(max_workers), worker_ceiling))
         self.ocr_enabled = ocr_enabled
         self.reports_dir = Path(reports_dir) if reports_dir else get_reports_dir()
 

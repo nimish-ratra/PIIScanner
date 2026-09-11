@@ -98,6 +98,14 @@ class TestBackend(unittest.TestCase):
 
         db.delete_scan("test_scan_001")
         self.assertEqual(len(db.get_all_scans()), 0)
+
+        # Verify SQLite Write-Ahead Logging (WAL) mode
+        with db._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("PRAGMA journal_mode;")
+            mode = cur.fetchone()[0]
+            self.assertEqual(mode.lower(), "wal")
+
         print("[OK] DatabaseManager test passed.")
 
     def test_03_redaction_helper(self):
@@ -330,6 +338,22 @@ class TestBackend(unittest.TestCase):
             self.assertIn("classification", header_line)
 
         print(f"[OK] Microsoft 5-Tier Sensitivity Classification test passed. Highest Tier: {summary['highest_classification']}")
+
+    def test_10_sqlite_wal_mode(self):
+        """Verify Tier 3 (P2): Fresh database initializes with PRAGMA journal_mode=WAL and synchronous=NORMAL."""
+        fresh_db_path = self.test_dir / "fresh_wal_test.db"
+        fresh_db = DatabaseManager(db_path=fresh_db_path)
+        with fresh_db._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("PRAGMA journal_mode;")
+            journal_mode = cur.fetchone()[0]
+            self.assertEqual(journal_mode.lower(), "wal")
+
+            cur.execute("PRAGMA synchronous;")
+            sync_mode = cur.fetchone()[0]
+            # 1 corresponds to NORMAL in SQLite synchronous pragma
+            self.assertIn(sync_mode, (1, "1", "NORMAL", "normal"))
+        print("[OK] SQLite WAL mode and synchronous=NORMAL verified.")
 
 
 if __name__ == "__main__":

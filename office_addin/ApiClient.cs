@@ -44,6 +44,7 @@ namespace PIISentinel.OfficeAddin
         private readonly int _timeoutMs;
         private readonly bool _failOpen;
         private readonly JavaScriptSerializer _serializer;
+        private string _serviceToken;
 
         public ApiClient() : this("http://127.0.0.1:47821", 2000, true)
         {
@@ -55,6 +56,22 @@ namespace PIISentinel.OfficeAddin
             _timeoutMs = timeoutMs > 0 ? timeoutMs : 2000;
             _failOpen = failOpen;
             _serializer = new JavaScriptSerializer();
+        }
+
+        public string GetServiceToken()
+        {
+            if (_serviceToken != null) return _serviceToken;
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string tokenFile = Path.Combine(appData, "PIISentinel", "service_token");
+                if (File.Exists(tokenFile))
+                {
+                    _serviceToken = File.ReadAllText(tokenFile).Trim();
+                }
+            }
+            catch { }
+            return _serviceToken;
         }
 
         public bool IsFailOpen()
@@ -124,6 +141,11 @@ namespace PIISentinel.OfficeAddin
                 request.ContentType = "application/json; charset=utf-8";
                 request.Timeout = _timeoutMs;
                 request.ReadWriteTimeout = _timeoutMs;
+                string token = GetServiceToken();
+                if (!string.IsNullOrEmpty(token))
+                {
+                    request.Headers["X-PIISentinel-Token"] = token;
+                }
 
                 var payload = new Dictionary<string, object>
                 {
@@ -186,6 +208,11 @@ namespace PIISentinel.OfficeAddin
                 request.Method = "POST";
                 request.ContentType = "application/json; charset=utf-8";
                 request.Timeout = 2000;
+                string token = GetServiceToken();
+                if (!string.IsNullOrEmpty(token))
+                {
+                    request.Headers["X-PIISentinel-Token"] = token;
+                }
 
                 var payload = new Dictionary<string, object>
                 {

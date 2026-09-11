@@ -57,6 +57,7 @@ hiddenimports = [
     "win32con",
     "win32com",
     "win32com.propsys",
+    "win32crypt",
 ]
 hiddenimports += collect_submodules("presidio_analyzer")
 hiddenimports += collect_submodules("spacy")

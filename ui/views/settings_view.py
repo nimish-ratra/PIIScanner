@@ -6,6 +6,7 @@ Phase 2 Real-Time Save Enforcement Policies.
 Persists settings to %APPDATA%/PIISentinel/config.json and enforcement_policy.json.
 """
 
+import os
 import sys
 import json
 import urllib.request
@@ -28,6 +29,7 @@ from backend.classifier import TIER_METADATA, SensitivityTier
 from backend.custom_recognizers import get_all_supported_entities
 from backend.watermark_backup import prune_watermark_backups
 from backend.file_ops import reveal_in_explorer
+from backend.service_auth import TOKEN_HEADER, get_or_create_service_token
 from backend.drive_scanner import DEFAULT_SYSTEM_EXCLUSIONS
 from ui.components.pii_selector_dialog import (
     PiiSelectorDialog, PiiViewerDialog, ENTITY_CATEGORIES
@@ -124,10 +126,11 @@ class SettingsView(QWidget):
 
         # Concurrent Workers
         workers_layout = QHBoxLayout()
-        workers_layout.addWidget(QLabel("Default Concurrent Workers (1–8):", grp_scan))
+        max_workers_ceiling = max(8, min((os.cpu_count() or 4) * 2, 32))
+        workers_layout.addWidget(QLabel(f"Default Concurrent Workers (1–{max_workers_ceiling}):", grp_scan))
         workers_layout.addStretch()
         self.spin_workers = QSpinBox(grp_scan)
-        self.spin_workers.setRange(1, 8)
+        self.spin_workers.setRange(1, max_workers_ceiling)
         self.spin_workers.setValue(config_manager.max_workers)
         self.spin_workers.setSuffix(" threads")
         self.spin_workers.setFixedWidth(110)
@@ -1001,7 +1004,11 @@ class SettingsView(QWidget):
             req = urllib.request.Request(
                 url,
                 data=payload,
-                headers={"Content-Type": "application/json", "User-Agent": "PIISentinel-UI"},
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "PIISentinel-UI",
+                    TOKEN_HEADER: get_or_create_service_token()
+                },
                 method="POST"
             )
             with urllib.request.urlopen(req, timeout=1.5) as resp:
@@ -1088,7 +1095,13 @@ class SettingsView(QWidget):
         port = self.spin_port.value()
         url = f"http://127.0.0.1:{port}/health"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "PIISentinel-UI"})
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "PIISentinel-UI",
+                    TOKEN_HEADER: get_or_create_service_token()
+                }
+            )
             with urllib.request.urlopen(req, timeout=1.5) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 if data.get("status") == "healthy":

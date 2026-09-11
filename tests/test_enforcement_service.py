@@ -36,11 +36,13 @@ class TestEnforcementService(unittest.TestCase):
 
         from backend.config import config_manager
         from backend.custom_recognizers import get_all_supported_entities
+        from backend.service_auth import get_or_create_service_token, TOKEN_HEADER
         cls._orig_rt_entities = config_manager.realtime_selected_entities
         config_manager.realtime_selected_entities = get_all_supported_entities()
 
-        # Create test client for FastAPI app
-        cls.client = TestClient(app)
+        # Create test client for FastAPI app configured with genuine service authentication token
+        cls.token = get_or_create_service_token()
+        cls.client = TestClient(app, headers={TOKEN_HEADER: cls.token})
 
     @classmethod
     def tearDownClass(cls):
@@ -236,6 +238,97 @@ class TestEnforcementService(unittest.TestCase):
         self.assertFalse(ServiceController.is_running(unused_port))
         # Idempotent stop on stopped port should return True
         self.assertTrue(ServiceController.stop(unused_port))
+
+    def test_13_token_authentication_enforcement(self):
+        """Verify Tier 1 (S1): Microservice rejects requests missing or having invalid shared-secret token."""
+        from backend.service_auth import TOKEN_HEADER
+
+        # 1. Loopback request with missing token header (e.g. malicious browser fetch) -> 403 Forbidden
+        client_no_token = TestClient(app, client=("127.0.0.1", 52000))
+        resp_no_token = client_no_token.post("/service/stop")
+        self.assertEqual(resp_no_token.status_code, 403)
+        self.assertIn("Non-loopback client rejected", resp_no_token.text)
+
+        # 2. Loopback health probe with missing token -> 403 Forbidden
+        resp_health_no_token = client_no_token.get("/health")
+        self.assertEqual(resp_health_no_token.status_code, 403)
+
+        # 3. Loopback request with invalid token -> 403 Forbidden
+        client_bad_token = TestClient(
+            app,
+            client=("127.0.0.1", 52000),
+            headers={TOKEN_HEADER: "forged_malicious_token_abc123"}
+        )
+        resp_bad = client_bad_token.get("/policy")
+        self.assertEqual(resp_bad.status_code, 403)
+
+        # 4. External IP with valid token -> 403 Forbidden (both defenses must hold)
+        client_external_valid = TestClient(
+            app,
+            client=("192.168.1.150", 52000),
+            headers={TOKEN_HEADER: self.token}
+        )
+        resp_ext = client_external_valid.get("/health")
+        self.assertEqual(resp_ext.status_code, 403)
+
+        # 5. Loopback request with valid token -> 200 OK
+        client_valid = TestClient(
+            app,
+            client=("127.0.0.1", 52000),
+            headers={TOKEN_HEADER: self.token}
+        )
+        resp_ok = client_valid.get("/health")
+        self.assertEqual(resp_ok.status_code, 200)
+        self.assertEqual(resp_ok.json().get("status"), "healthy")
+
+    def test_14_quarantine_password_dpapi_and_redaction(self):
+        """Verify Tier 2 (S2): Quarantine password is DPAPI-encrypted on disk and redacted on GET /policy."""
+        policy = EnforcementPolicyManager(policy_path=self.policy_file)
+        raw_secret = "SecurePassphrase987!#$"
+        policy.quarantine_password = raw_secret
+
+        # 1. Getter decrypts password correctly
+        self.assertEqual(policy.quarantine_password, raw_secret)
+
+        # 2. Raw JSON on disk must NOT contain plaintext password
+        disk_content = self.policy_file.read_text(encoding="utf-8")
+        self.assertNotIn(raw_secret, disk_content)
+        self.assertIn("dpapi:", disk_content)
+
+        # 3. GET /policy must redact password to '********'
+        resp_get = self.client.get("/policy")
+        self.assertEqual(resp_get.status_code, 200)
+        policy_data = resp_get.json()
+        self.assertNotIn(raw_secret, json.dumps(policy_data))
+        if policy_data.get("quarantine_password"):
+            self.assertEqual(policy_data["quarantine_password"], "********")
+
+        # 4. POST /policy with new password encrypts on write and redacts in response
+        new_secret = "AnotherSecretPassword456!@"
+        resp_post = self.client.post("/policy", json={"quarantine_password": new_secret})
+        self.assertEqual(resp_post.status_code, 200)
+        post_data = resp_post.json()
+        self.assertEqual(post_data["policy"]["quarantine_password"], "********")
+        self.assertNotIn(new_secret, json.dumps(post_data))
+
+    def test_15_policy_update_schema_validation_and_forbid_extras(self):
+        """Verify Tier 2 (S3): POST /policy strictly validates schema and rejects unknown fields with 422."""
+        # 1. Injection of unknown key -> 422 Unprocessable Entity
+        bad_payload = {"malicious_extra_field": "injected_val"}
+        resp_bad = self.client.post("/policy", json=bad_payload)
+        self.assertEqual(resp_bad.status_code, 422)
+
+        # 2. Valid fields succeed
+        valid_payload = {
+            "fail_safe_mode": "fail-open",
+            "enforce_office": True,
+            "toast_notifications": False
+        }
+        resp_valid = self.client.post("/policy", json=valid_payload)
+        self.assertEqual(resp_valid.status_code, 200)
+        self.assertTrue(resp_valid.json().get("success"))
+        self.assertTrue(resp_valid.json()["policy"]["fail_open"])
+        self.assertFalse(resp_valid.json()["policy"]["toast_notifications"])
 
 
 if __name__ == "__main__":

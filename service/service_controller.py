@@ -16,6 +16,8 @@ import urllib.error
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+from backend.service_auth import TOKEN_HEADER, get_or_create_service_token
+
 logger = logging.getLogger("pii_sentinel.service_controller")
 
 DEFAULT_PORT = 47821
@@ -44,7 +46,13 @@ class ServiceController:
 
         url = f"http://127.0.0.1:{port}/health"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "PIISentinel-Controller"})
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "PIISentinel-Controller",
+                    TOKEN_HEADER: get_or_create_service_token()
+                }
+            )
             with urllib.request.urlopen(req, timeout=0.3) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -145,7 +153,11 @@ class ServiceController:
                 req = urllib.request.Request(
                     url,
                     data=b"{}",
-                    headers={"Content-Type": "application/json", "User-Agent": "PIISentinel-Controller"},
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "PIISentinel-Controller",
+                        TOKEN_HEADER: get_or_create_service_token()
+                    },
                     method="POST"
                 )
                 with urllib.request.urlopen(req, timeout=1.5) as resp:
@@ -194,7 +206,11 @@ class ServiceController:
             req = urllib.request.Request(
                 url,
                 data=payload,
-                headers={"Content-Type": "application/json", "User-Agent": "PIISentinel-Probe"},
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "PIISentinel-Probe",
+                    TOKEN_HEADER: get_or_create_service_token()
+                },
                 method="POST"
             )
             with urllib.request.urlopen(req, timeout=3.0) as resp:

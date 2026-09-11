@@ -324,9 +324,16 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 
 - **Location:** `service/api_server.py`
 - **Host & Port:** `127.0.0.1:47821` (never binds to `0.0.0.0`).
-- **Security Middleware:** Rejects all non-loopback requests with `403 Forbidden`.
+- **Two-Tier Security Gate (`verify_loopback_and_auth`):**
+  - **Tier 1 (Loopback Enforcement):** Rejects any request originating from non-loopback IP addresses (`127.0.0.1`, `::1`, `localhost`) with `403 Forbidden`.
+  - **Tier 2 (Shared-Secret Bearer Token Authentication):** Enforces that every request across all endpoints (including `/health` and `/service/stop`) supplies the custom header `X-PIISentinel-Token`.
+  - **Token Generation & Storage (`backend/service_auth.py`):** On first run, a cryptographically secure token (`secrets.token_urlsafe(32)`) is generated and persisted to `%APPDATA%\PIISentinel\service_token` with current-user-only NTFS permissions.
+  - **Constant-Time Verification:** Headers are verified using `hmac.compare_digest` to prevent timing attacks. Rejections return identical 403 Forbidden responses to avoid leaking whether IP or token validation failed.
+  - **Protection Scope:** Completely neutralizes cross-origin browser JavaScript attacks (e.g. malicious webpages executing unprompted `fetch('http://127.0.0.1:47821/service/stop', {method: 'POST'})` to disable endpoint defenses).
+  - **Trusted Callers:** `ServiceController`, `ApiClient.cs`, `SettingsView`, and `LiveMonitoringView` automatically load the shared secret from `%APPDATA%\PIISentinel\service_token` and supply `X-PIISentinel-Token`.
+  - **Deployment & Backward-Compatibility Note:** The Office add-in (`office_addin/ApiClient.cs`) and Python microservice must be built and deployed in coordination. An older add-in binary lacking token injection will receive 403 Forbidden responses from a hardened microservice; run `office_addin/build_and_register.ps1` whenever the microservice auth layer is updated.
 - **Endpoints:**
-  - `GET /health` — liveness probe returning service health, timestamp, and active fail-safe mode.
+  - `GET /health` — liveness probe returning service health, timestamp, and active fail-safe mode (requires `X-PIISentinel-Token`).
   - `POST /classify/text` — body: `{"text": string, "source_hint": string}` -> returns `{tier, level, badge, findings, recommended_action, rationale}`.
   - `POST /classify/file` — body: `{"path": string}` -> runs Apache Tika extraction followed by Presidio + Purview classification.
   - `POST /enforcement/log` — logs block, quarantine, warn, allow, or override events to SQLite.
@@ -350,6 +357,9 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 - **Dual-Path Resolution (`get_action_for_tier` / `resolve_action`):**
   - In Office documents: `quarantine` maps to `block` (pre-save block).
   - In Generic files: `block` maps to `quarantine` (post-write remediation).
+- **Quarantine Password Hardening (Windows DPAPI):** `quarantine_password` is never stored in plaintext on disk. The setter in `EnforcementPolicyManager` transparently encrypts the password with Windows DPAPI (`win32crypt.CryptProtectData`), tying decryption strictly to the current Windows user account (`dpapi:<base64>`). The getter transparently decrypts (`CryptUnprotectData`) for file archive operations in `file_watcher/quarantine_bridge.py`.
+- **Secret Redaction on Read:** `GET /policy` and `POST /policy` responses mask `quarantine_password` (and any fields in `SECRET_POLICY_FIELDS`) to `"********"` before returning JSON to callers, preventing accidental credential harvesting.
+- **Strict Schema Validation (`PolicyUpdateRequest`):** `POST /policy` is validated via Pydantic v2 with `model_config = ConfigDict(extra="forbid")`. Unknown or malicious keys are rejected with `HTTP 422 Unprocessable Entity` rather than silently accepted. Configurable fields include `realtime_selected_entities`, `tier_actions`, `fail_open`, `fail_safe_mode`, `watched_folders`, `quarantine_archive_path`, `quarantine_password`, `enforce_office`, `enforce_watcher`, `toast_notifications`, and `api_port`. The internal `api_host` remains strictly locked to `127.0.0.1`.
 - **Fail-Safe Mode & Offline Resolution:**
   - `Fail-Closed` (Default / High Security): Blocks or quarantines if the microservice is unreachable, preventing accidental data leaks.
   - `Fail-Open` (Permissive): Allows document saves without interruption if the microservice is stopped.
@@ -412,8 +422,8 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 
 ### 8.6 Testing Suite
 
-- `tests/test_backend.py` (15 tests): Core scanner, recognizers, database, classification, and redaction tests.
-- `tests/test_enforcement_service.py` (12 tests): Validates policy mapping, resolve_action dual path, FastAPI endpoints (`/health`, `/classify/text`, `/classify/file`, `/enforcement/log`, `/policy`, `/service/stop`), ServiceController methods, and loopback security rejection (403).
+- `tests/test_backend.py` (16 tests): Core scanner, recognizers, database, classification, redaction, and SQLite WAL mode tests.
+- `tests/test_enforcement_service.py` (15 tests): Validates policy mapping, resolve_action dual path, FastAPI endpoints (`/health`, `/classify/text`, `/classify/file`, `/enforcement/log`, `/policy`, `/service/stop`), ServiceController methods, loopback & shared-secret token authentication rejection (403), DPAPI password encryption, and schema validation with forbidden extras.
 - `tests/test_file_watcher.py` (5 tests): Validates quarantine bridge encryption, plaintext file deletion, SQLite event logging, debouncing ignore rules, unwatched directory exclusion, and benign file preservation.
 - `tests/test_interception_log.py` (4 tests): Validates enforcement schema, multi-filters, CSV export, and UI helper badges.
 - `tests/test_realtime_entities.py` (4 tests): Validates decoupled 36-entity real-time configuration and policy push.
@@ -422,7 +432,7 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 - `tests/test_watermark_backup.py` (4 tests): Validates byte-for-byte pre-mutation backup, undo rollback, modification collision guard, and retention pruner.
 - `tests/test_watermark_engine.py` (9 tests): Validates format-specific watermarking across DOCX, XLSX (with `&&` ampersand escaping), PPTX (with non-colliding master shape IDs), PDF, images, non-destructive NTFS ADS metadata tagging (with explicit failure detection), dry-run backup omission, and pre-flight locked/in-use file detection.
 - `tests/test_watermark_workflow.py` (4 tests): Validates end-to-end watermark review dialog, tier batch selection, filtering, database registry updates, and dry-run zero-backup verification.
-- Run complete test suite (71 tests passing):
+- Run complete test suite (75 tests passing):
   ```powershell
   python -m unittest discover tests
   ```
@@ -461,7 +471,23 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 - **Scans Table Migration:** Added `scan_source TEXT DEFAULT 'directory_scan'` (supports `'directory_scan'` and `'full_system_scan'`).
 - **Findings Table Migration:** Added `watermark_status`, `watermark_method`, `watermark_applied_at`, `watermark_backup_path`, `content_hash_sha256`.
 - **File Watermarks Table (`file_watermarks`):** High-performance registry table with indexes on `file_path`, `content_hash_sha256`, and `watermark_status` for fast idempotency lookups, candidate batching, and cross-scan rollback tracking.
+- **SQLite WAL Mode & Concurrency Architecture:** Database initializes with `PRAGMA journal_mode=WAL;` and connections execute `PRAGMA synchronous=NORMAL;` with connection timeout 30.0s, eliminating single-writer table locks and contention across concurrent scanner worker threads, file watcher events, and API audit logs.
 - **Known Limitation & Roadmap Note (Phase 3D):** The `file_watermarks` registry is keyed by `file_path`. Renaming or moving a watermarked file on disk orphans its previous registry record, meaning the newly moved path appears unwatermarked on subsequent scans. This will be revisited in Phase 3D when central telemetry/metadata indexing allows content-hash-first primary lookups across the endpoint fleet.
+
+### 9.5 Scanner Performance Hardening & Concurrency Architecture
+
+- **Dynamic Worker Pool Scaling (`backend/scanner.py`, `backend/config.py`):**
+  - Replaced the legacy hardcoded 8-worker ceiling with host-derived dynamic scaling: `max(8, min((os.cpu_count() or 4) * 2, 32))`.
+  - UI controls in `ScanView` (`slider_workers`) and `SettingsView` (`spin_workers`) dynamically discover host CPU cores and adjust ranges (1 to host ceiling), permitting multi-core systems to execute up to 32 concurrent workers during full-system sweeps.
+- **Extension-Filter Syscall Short-Circuiting:**
+  - In `backend/scanner.py` (`_count_eligible_files`), file extension checking (`ext in self.supported_extensions`) evaluates purely as an in-memory string comparison directly on the filename before any path joining, exclusion evaluation, or filesystem `os.stat()` calls.
+  - Excluded extensions (e.g. system files, browser caches, Python bytecodes) avoid all OS stat syscall overhead during deep directory traversals.
+- **Deliberate Deferred Architecture Decision — Hybrid Thread+Process Pipeline:**
+  - *Current Concurrency Model:* Uses `ThreadPoolExecutor` to execute extraction and detection tasks. This provides high throughput for I/O-bound Apache Tika extraction and disk read operations.
+  - *GIL Limitation:* The Presidio/spaCy NLP entity detection stage is CPU-intensive and partially bounded by Python's Global Interpreter Lock (GIL), meaning threads do not achieve 100% multi-core CPU utilization during the classification phase.
+  - *Future Hybrid Roadmap:* A hybrid architecture (`ThreadPoolExecutor` for asynchronous I/O and Tika extraction dispatch + a small `ProcessPoolExecutor` sized near `os.cpu_count()` for CPU-bound Presidio/spaCy classification, with the spaCy model initialized once per process via an initializer rather than per-task) is the designated design when fleet-scale throughput demands it.
+  - *RAM-vs-CPU Tradeoff:* This is deliberately deferred because each worker process requires its own loaded spaCy NLP pipeline instance (~400MB–500MB RAM per process, totaling 4GB–8GB on an 8–16 core machine). For a local desktop agent, the current memory-efficient thread pool remains the optimal default until full-drive scan throughput on high-core hardware becomes the primary bottleneck.
+
 
 
 

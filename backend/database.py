@@ -25,8 +25,12 @@ class DatabaseManager:
 
     @contextlib.contextmanager
     def _get_connection(self):
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA synchronous=NORMAL;")
+        except Exception:
+            pass
         try:
             yield conn
         finally:
@@ -37,6 +41,13 @@ class DatabaseManager:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._get_connection() as conn:
             cursor = conn.cursor()
+
+            # Enable Write-Ahead Logging (WAL) and NORMAL synchronous mode for high concurrent throughput
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                cursor.execute("PRAGMA synchronous=NORMAL;")
+            except Exception as e:
+                logger.warning(f"Could not enable SQLite WAL mode (fallback to default journal mode): {e}")
 
             # Scans table
             cursor.execute("""

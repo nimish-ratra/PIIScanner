@@ -269,13 +269,14 @@ class ScanView(QWidget):
         engine_vbox.addLayout(worker_header)
 
         self.slider_workers = QSlider(Qt.Horizontal, engine_group)
-        self.slider_workers.setRange(1, 8)
+        max_limit = max(8, min((os.cpu_count() or 4) * 2, 32))
+        self.slider_workers.setRange(1, max_limit)
         default_workers = config_manager.max_workers
         self.slider_workers.setValue(default_workers)
         self.slider_workers.valueChanged.connect(self._on_workers_changed)
         engine_vbox.addWidget(self.slider_workers)
 
-        worker_guide = QLabel("1 (Sequential)   •   2 (Balanced)   •   4 (Fast)   •   8 (Turbo)", engine_group)
+        worker_guide = QLabel(f"1 (Sequential)   •   2 (Balanced)   •   4 (Fast)   •   {max_limit} (Turbo)", engine_group)
         worker_guide.setStyleSheet("color: #64748b; font-size: 10px; font-weight: 600;")
         engine_vbox.addWidget(worker_guide)
 

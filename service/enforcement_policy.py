@@ -12,10 +12,17 @@ Air-gapped & local-only.
 
 import os
 import json
+import base64
 import logging
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+try:
+    import win32crypt
+    HAS_WIN32CRYPT = True
+except ImportError:
+    HAS_WIN32CRYPT = False
 
 from backend.config import get_app_dir
 from backend.classifier import SensitivityTier
@@ -83,7 +90,12 @@ class EnforcementPolicyManager:
                 logger.error(f"Failed to read enforcement policy from {self.policy_path}: {e}")
 
         self._policy = defaults
-        self.save()
+        # Migrate plaintext quarantine password to DPAPI if present
+        qp = self._policy.get("quarantine_password")
+        if qp and isinstance(qp, str) and not qp.startswith("dpapi:") and HAS_WIN32CRYPT:
+            self.quarantine_password = qp
+        else:
+            self.save()
 
     def save(self) -> None:
         """Save enforcement policy to disk."""
@@ -149,11 +161,41 @@ class EnforcementPolicyManager:
 
     @property
     def quarantine_password(self) -> Optional[str]:
-        return self._policy.get("quarantine_password")
+        """Decrypt and return quarantine password using Windows DPAPI."""
+        raw = self._policy.get("quarantine_password")
+        if not raw:
+            return None
+        if isinstance(raw, str) and raw.startswith("dpapi:"):
+            if HAS_WIN32CRYPT:
+                try:
+                    b64_str = raw[len("dpapi:"):]
+                    enc_bytes = base64.b64decode(b64_str)
+                    _, dec_bytes = win32crypt.CryptUnprotectData(enc_bytes)
+                    return dec_bytes.decode("utf-8")
+                except Exception as e:
+                    logger.error(f"Failed to decrypt quarantine password with DPAPI: {e}")
+                    return None
+            else:
+                logger.warning("win32crypt unavailable to decrypt DPAPI quarantine password")
+                return None
+        return raw
 
     @quarantine_password.setter
     def quarantine_password(self, val: Optional[str]) -> None:
-        self._policy["quarantine_password"] = val
+        """Encrypt quarantine password with Windows DPAPI before persisting."""
+        if not val:
+            self._policy["quarantine_password"] = None
+        else:
+            if HAS_WIN32CRYPT and not val.startswith("dpapi:"):
+                try:
+                    enc_bytes = win32crypt.CryptProtectData(val.encode("utf-8"), "PIISentinel Quarantine Password")
+                    b64 = base64.b64encode(enc_bytes).decode("ascii")
+                    self._policy["quarantine_password"] = f"dpapi:{b64}"
+                except Exception as e:
+                    logger.error(f"DPAPI encryption failed, storing in-memory fallback: {e}")
+                    self._policy["quarantine_password"] = val
+            else:
+                self._policy["quarantine_password"] = val
         self.save()
 
     @property
@@ -209,6 +251,11 @@ class EnforcementPolicyManager:
 
     def update_from_dict(self, updates: Dict[str, Any]) -> None:
         """Update multiple policy values and persist."""
+        # Process quarantine_password through setter so it is encrypted via Windows DPAPI
+        if "quarantine_password" in updates:
+            self.quarantine_password = updates["quarantine_password"]
+            updates = {k: v for k, v in updates.items() if k != "quarantine_password"}
+
         self._policy.update(updates)
         # Ensure api_host remains loopback
         self._policy["api_host"] = "127.0.0.1"

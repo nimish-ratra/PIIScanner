@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from backend.config import ConfigManager
 from backend.custom_recognizers import get_all_supported_entities
+from backend.service_auth import get_or_create_service_token, TOKEN_HEADER
 from service.api_server import app
 from service.enforcement_policy import policy_manager, EnforcementAction
 
@@ -25,7 +26,8 @@ class TestRealtimeEntities(unittest.TestCase):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.config_path = Path(self.tmp_dir.name) / "config.json"
         self.cfg = ConfigManager(self.config_path)
-        self.client = TestClient(app)
+        token = get_or_create_service_token()
+        self.client = TestClient(app, headers={TOKEN_HEADER: token})
 
     def tearDown(self):
         self.tmp_dir.cleanup()
