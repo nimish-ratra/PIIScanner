@@ -418,11 +418,11 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 - `tests/test_interception_log.py` (4 tests): Validates enforcement schema, multi-filters, CSV export, and UI helper badges.
 - `tests/test_realtime_entities.py` (4 tests): Validates decoupled 36-entity real-time configuration and policy push.
 - `tests/test_ui.py` (7 tests): Validates MainWindow, tab navigation, results filtering, dialogs, and settings persistence.
-- `tests/test_drive_scanner.py` (5 tests): Validates fixed physical drive discovery, optical/network partition exclusions, and noise/system path filtering.
+- `tests/test_drive_scanner.py` (6 tests): Validates fixed physical drive discovery, optical/network partition exclusions, system drive path-anchoring vs non-system drives, and noise/system path filtering.
 - `tests/test_watermark_backup.py` (4 tests): Validates byte-for-byte pre-mutation backup, undo rollback, modification collision guard, and retention pruner.
-- `tests/test_watermark_engine.py` (5 tests): Validates format-specific watermarking across DOCX, XLSX, PPTX, PDF, images, and non-destructive NTFS ADS metadata tagging.
-- `tests/test_watermark_workflow.py` (3 tests): Validates end-to-end watermark review dialog, tier batch selection, filtering, and database registry updates.
-- Run complete test suite (64 tests passing):
+- `tests/test_watermark_engine.py` (9 tests): Validates format-specific watermarking across DOCX, XLSX (with `&&` ampersand escaping), PPTX (with non-colliding master shape IDs), PDF, images, non-destructive NTFS ADS metadata tagging (with explicit failure detection), dry-run backup omission, and pre-flight locked/in-use file detection.
+- `tests/test_watermark_workflow.py` (4 tests): Validates end-to-end watermark review dialog, tier batch selection, filtering, database registry updates, and dry-run zero-backup verification.
+- Run complete test suite (71 tests passing):
   ```powershell
   python -m unittest discover tests
   ```
@@ -433,22 +433,26 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 
 ### 9.1 Multi-Drive / Full-System Scanning (`backend/drive_scanner.py`)
 - **Fixed Physical Drive Enumeration:** Uses `psutil.disk_partitions(all=False)` filtered by `opts` containing `"fixed"` with fallback to `win32file.GetDriveType(mountpoint) == win32file.DRIVE_FIXED`. Strictly filters out removable media (USB sticks, SD cards), optical drives (CD/DVD), and network shares (SMB).
-- **Default Noise/System Exclusion Rules:** Skips OS and high-noise developer directories: `Windows`, `Program Files`, `Program Files (x86)`, `$Recycle.Bin`, `ProgramData`, `AppData\Local\Temp`, `node_modules`, `.git`.
+- **Dual-Category Exclusion Matching:** System path exclusions (`Windows`, `Program Files`, `Program Files (x86)`, `$Recycle.Bin`, `ProgramData`, `AppData\Local\Temp`) are path-anchored strictly against the active `SystemDrive` (`os.getenv("SystemDrive", "C:")`). User folders with system names on non-system drives (e.g. `D:\Windows` or `D:\Backups\Windows`) are scanned normally to prevent scan evasion. Name-anywhere exclusions (`node_modules`, `.git`) match by bare folder name across any drive.
+- **Per-Session Confirmation Guard:** Switching to "Full System Scan" mode prompts the user with an explicit scope confirmation dialog once per application session (managed in-memory via `self._full_system_scan_confirmed` on `ScanView`, avoiding permanent persistent bypass across separate app launches).
 - **Fast Tree Pruning:** In `backend/scanner.py`, `_count_eligible_files` mutates `dirnames[:]` in-place during `os.walk`, pruning excluded subtrees immediately without recursive traversal overhead. Configurable from user preferences (`system_scan_exclusions`).
 
 ### 9.2 Format-Aware Watermarking Engine (`backend/watermark_engine.py`)
 - **Polymorphic Strategy Architecture:** Implements `WatermarkStrategy` abstract base with concrete strategy classes:
   - `DocxWatermarkStrategy`: Inserts formatted footer classification text and diagonal WordArt VML shape (`w:pict`) into the header XML using `python-docx`.
-  - `XlsxWatermarkStrategy`: Sets centered top header and bottom footer classification banners across all worksheets using `openpyxl`.
-  - `PptxWatermarkStrategy`: Adds diagonal watermark text boxes to slide masters and slides using `python-pptx`.
+  - `XlsxWatermarkStrategy`: Sets centered top header and bottom footer classification banners across all worksheets using `openpyxl`. Automatically escapes literal `&` characters to `&&` in the template and tier strings so Excel formatting codes (`&B`, `&12`, etc.) are never corrupted.
+  - `PptxWatermarkStrategy`: Adds diagonal watermark text boxes to slide masters and slides using `python-pptx`. When injecting shapes into slide masters (`master.element.spTree`), shape IDs are dynamically re-numbered to guaranteed non-colliding IDs (`max_id + 1` / `900001+`), preventing PowerPoint repair-on-open corruption warnings.
   - `PdfWatermarkStrategy`: Generates an in-memory transparent diagonal overlay page via `reportlab` and overlays onto each page via `pypdf.PageObject.merge_page`.
   - `ImageWatermarkStrategy`: Composites rotated semi-transparent alpha text overlays over image files using `Pillow`.
-  - `PlaintextAdsWatermarkStrategy`: Leaves plaintext/structured files (`.csv`, `.txt`, `.json`, `.xml`, etc.) completely untouched to avoid breaking parsers; writes metadata to NTFS Alternate Data Stream (`<path>:pii-sentinel-classification`) and Windows shell property store (`System.Comment`).
+  - `PlaintextAdsWatermarkStrategy`: Non-destructive metadata tagging. Primary tagging via NTFS Alternate Data Stream (`<path>:pii-sentinel-classification`). If the ADS write fails (e.g. non-NTFS volume), the strategy immediately fails and records status `failed` in `file_watermarks` registry; it never claims success on partial or failed writes. Secondary Windows shell property store (`System.Comment`) is applied as an Explorer enhancement.
+- **Pre-Flight Open/Locked File Check:** `is_file_open_or_locked()` inspects candidate files before mutation. Detects Office sibling lock files (`~$<filename>`) and attempts non-blocking exclusive read/write access. If the file is open elsewhere, it returns `SKIPPED_FILE_IN_USE` without taking backups or mutating disk bytes, prompting the user to close the file before watermarking.
 - **Idempotency via SHA-256:** Queries `file_watermarks` registry; if file has `watermark_status == 'applied'` with identical SHA-256 content hash, skips to prevent stacking duplicate watermarks.
+- **Dry-Run Mode (Safe & Fast Evaluation):** When `dry_run=True`, candidate eligibility, sensitivity tier, and SHA-256 content hashes are resolved and returned as `PENDING` without performing any disk mutations and without copying files into the backup directory. Byte-for-byte pre-mutation backups are strictly deferred until actual mutation (`dry_run=False`).
+- **Platform Dependencies:** Uses declared `pywin32>=306` dependency in `requirements.txt` for Windows shell property store (`win32com.propsys`) and low-level drive type enumeration (`win32file`).
 - **Configurable Watermark Template:** Customizable template supporting `{tier}`, `{date}`, `{time}`, `{filename}` placeholders.
 
 ### 9.3 Pre-Mutation Backup & Rollback Safety Net (`backend/watermark_backup.py`)
-- **Byte-for-Byte Pre-Mutation Backups:** Copies original file to `%APPDATA%\PIISentinel\watermark_backups\<content_hash>\<filename>` before any file mutation occurs.
+- **Byte-for-Byte Pre-Mutation Backups:** Copies original file to `%APPDATA%\PIISentinel\watermark_backups\<content_hash>\<filename>` only upon mutation (`dry_run=False`).
 - **Rollback / Undo Action:** Restores original file byte-for-byte from backup store.
 - **Modification Collision Guard:** Detects whether the file was altered by the user after watermarking; warns and aborts rather than overwriting unsaved user edits.
 - **Automated Retention Pruning:** Configurable retention window (default: 30 days); prunes expired backup directories from disk and logs results.
@@ -457,6 +461,7 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 - **Scans Table Migration:** Added `scan_source TEXT DEFAULT 'directory_scan'` (supports `'directory_scan'` and `'full_system_scan'`).
 - **Findings Table Migration:** Added `watermark_status`, `watermark_method`, `watermark_applied_at`, `watermark_backup_path`, `content_hash_sha256`.
 - **File Watermarks Table (`file_watermarks`):** High-performance registry table with indexes on `file_path`, `content_hash_sha256`, and `watermark_status` for fast idempotency lookups, candidate batching, and cross-scan rollback tracking.
+- **Known Limitation & Roadmap Note (Phase 3D):** The `file_watermarks` registry is keyed by `file_path`. Renaming or moving a watermarked file on disk orphans its previous registry record, meaning the newly moved path appears unwatermarked on subsequent scans. This will be revisited in Phase 3D when central telemetry/metadata indexing allows content-hash-first primary lookups across the endpoint fleet.
 
 
 

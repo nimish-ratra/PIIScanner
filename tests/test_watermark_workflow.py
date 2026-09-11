@@ -179,6 +179,33 @@ class TestWatermarkWorkflow(unittest.TestCase):
 
         dlg.close()
 
+    def test_05_batch_dry_run_creates_no_backups(self):
+        """Verify that a dry-run pass over candidates does not create any files in the backup directory."""
+        from backend.watermark_engine import WatermarkEngine, WatermarkStatus
+        from backend.watermark_backup import get_watermark_backup_dir
+
+        test_dir = Path(self.temp_dir) / "dry_run_batch"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir = Path(self.temp_dir) / "backups_dry_run"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        engine = WatermarkEngine(min_tier="Confidential", backup_dir=backup_dir, db=self.db)
+
+        files = []
+        for i in range(3):
+            f = test_dir / f"candidate_{i}.txt"
+            f.write_text(f"Patient record {i} PAN: ABCDE123{i}F", encoding="utf-8")
+            files.append(f)
+
+        for f in files:
+            res = engine.apply_watermark(f, tier="Highly Confidential", dry_run=True)
+            self.assertEqual(res.status, WatermarkStatus.PENDING)
+            self.assertIsNone(res.backup_path)
+
+        # Assert no files exist in backup directory
+        backups = [b for b in backup_dir.rglob("*") if b.is_file()]
+        self.assertEqual(len(backups), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

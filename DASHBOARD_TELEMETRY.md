@@ -1,4 +1,7 @@
-﻿# PII Sentinel — Desktop Agent to Server & Dashboard Telemetry Specification
+# PII Sentinel — Desktop Agent to Server & Dashboard Telemetry Specification
+
+> [!WARNING]
+> **Status: Forward-looking design sketch for the future Phase 3D+ Admin Server. The server/, client/, and agent/ directories described here do not exist yet.**
 
 ## 1. System Architecture
 

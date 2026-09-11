@@ -24,17 +24,22 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Standard system/noise directories that should be skipped during full drive sweeps
-DEFAULT_SYSTEM_EXCLUSIONS: List[str] = [
+# Standard system/noise directories split by matching strategy
+PATH_ANCHORED_SYSTEM_EXCLUSIONS: List[str] = [
     "Windows",
     "Program Files",
     "Program Files (x86)",
     "$Recycle.Bin",
     "ProgramData",
     r"AppData\Local\Temp",
-    "node_modules",
-    ".git"
 ]
+
+NAME_ANYWHERE_EXCLUSIONS: List[str] = [
+    "node_modules",
+    ".git",
+]
+
+DEFAULT_SYSTEM_EXCLUSIONS: List[str] = PATH_ANCHORED_SYSTEM_EXCLUSIONS + NAME_ANYWHERE_EXCLUSIONS
 
 
 def get_fixed_drives() -> List[str]:
@@ -110,38 +115,93 @@ def get_fixed_drives() -> List[str]:
     return normalized
 
 
-def is_path_excluded(path: str, exclusions: Optional[List[str]] = None) -> bool:
+def is_path_excluded(
+    path: str,
+    exclusions: Optional[List[str]] = None,
+    path_anchored_exclusions: Optional[List[str]] = None,
+    name_anywhere_exclusions: Optional[List[str]] = None
+) -> bool:
     """
     Check whether a directory or file path falls within any exclusion rule.
-    Performs case-insensitive normalization matching directory names and subpaths.
+    Applies path-anchored matching for system folders (against SystemDrive)
+    and name-anywhere matching for developer noise folders (node_modules, .git).
     """
     if not path:
         return False
 
-    exclusion_rules = exclusions if exclusions is not None else DEFAULT_SYSTEM_EXCLUSIONS
-    if not exclusion_rules:
-        return False
+    norm_path = os.path.normpath(path)
+    p = Path(norm_path)
+    norm_path_lower = norm_path.lower()
+    path_parts_lower = [part.lower() for part in p.parts]
 
-    norm_path = os.path.normpath(path).lower()
-    path_parts = [p.lower() for p in Path(norm_path).parts]
+    # Resolve exclusion lists
+    if path_anchored_exclusions is not None or name_anywhere_exclusions is not None:
+        anchored_rules = [r.strip() for r in (path_anchored_exclusions or []) if r.strip()]
+        anywhere_rules = [r.strip() for r in (name_anywhere_exclusions or []) if r.strip()]
+    elif exclusions is not None:
+        # Separate caller-provided unified list into anchored vs name-anywhere
+        anchored_rules = []
+        anywhere_rules = []
+        anchored_lookup = {r.lower() for r in PATH_ANCHORED_SYSTEM_EXCLUSIONS}
+        for r in exclusions:
+            clean = r.strip()
+            if not clean:
+                continue
+            if clean.lower() in anchored_lookup or clean.startswith(("\\", "/")) or (len(clean) > 1 and clean[1] == ":"):
+                anchored_rules.append(clean)
+            else:
+                anywhere_rules.append(clean)
+    else:
+        anchored_rules = list(PATH_ANCHORED_SYSTEM_EXCLUSIONS)
+        anywhere_rules = list(NAME_ANYWHERE_EXCLUSIONS)
 
-    for rule in exclusion_rules:
-        clean_rule = rule.strip()
-        if not clean_rule:
+    # 1. Match name-anywhere exclusions (e.g. node_modules, .git) across any drive
+    for rule in anywhere_rules:
+        norm_rule = os.path.normpath(rule).lower()
+        if norm_rule in path_parts_lower:
+            return True
+        if f"\\{norm_rule}\\" in f"\\{norm_path_lower}\\" or norm_path_lower.endswith(f"\\{norm_rule}"):
+            return True
+
+    # 2. Match path-anchored exclusions against actual SystemDrive (or explicitly specified drive roots)
+    system_drive = os.getenv("SystemDrive", "C:").rstrip("\\").upper() + "\\"
+    sys_drive_letter = system_drive[:2].lower()
+
+    # Determine drive letter of scanned path
+    path_drive = (p.drive.lower() if p.drive else (norm_path_lower[:2] if len(norm_path_lower) >= 2 and norm_path_lower[1] == ":" else ""))
+    is_on_system_drive = (path_drive == sys_drive_letter)
+
+    for rule in anchored_rules:
+        norm_rule = os.path.normpath(rule)
+        norm_rule_lower = norm_rule.lower()
+
+        # If rule has an explicit drive letter (e.g. C:\CustomPath), test directly
+        if len(norm_rule) > 1 and norm_rule[1] == ":":
+            try:
+                if p.is_relative_to(Path(norm_rule)):
+                    return True
+            except (ValueError, TypeError):
+                if norm_path_lower.startswith(norm_rule_lower):
+                    return True
             continue
 
-        norm_rule = os.path.normpath(clean_rule).lower()
+        # For relative system rules (Windows, Program Files, AppData\Local\Temp):
+        # Must only match if the path is genuinely located on the SystemDrive
+        if not is_on_system_drive:
+            continue
 
-        # Direct folder name match (e.g. 'node_modules', '.git', '$recycle.bin', 'windows')
-        if norm_rule in path_parts:
-            return True
-
-        # Exact substring / subpath match (e.g. 'appdata\\local\\temp')
-        if f"\\{norm_rule}\\" in f"\\{norm_path}\\" or norm_path.endswith(f"\\{norm_rule}"):
-            return True
-
-        # Prefix match from root (e.g. 'c:\\windows')
-        if any(norm_path.startswith(f"{drive.lower()}{norm_rule}") for drive in ("c:\\", "d:\\", "e:\\", "f:\\")):
-            return True
+        # Subpath pattern like AppData\Local\Temp
+        if "\\" in norm_rule:
+            if f"\\{norm_rule_lower}\\" in f"\\{norm_path_lower}\\" or norm_path_lower.endswith(f"\\{norm_rule_lower}"):
+                return True
+        else:
+            # Anchored to root of SystemDrive (<SystemDrive>\<norm_rule>)
+            anchor = Path(system_drive, norm_rule.lstrip("\\/"))
+            try:
+                if p.is_relative_to(anchor):
+                    return True
+            except (ValueError, TypeError):
+                if norm_path_lower.startswith(str(anchor).lower()):
+                    return True
 
     return False

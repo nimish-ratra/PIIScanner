@@ -76,6 +76,7 @@ class ScanView(QWidget):
         self.selected_entities: List[str] = []
         self._detected_file_list: List[str] = []
         self.entity_checkboxes = {}  # Backwards compatibility
+        self._full_system_scan_confirmed: bool = False
         self._init_ui()
         self._load_entities()
         self._update_folder_preview()
@@ -612,8 +613,8 @@ class ScanView(QWidget):
     def _on_scan_mode_changed(self) -> None:
         """Handle toggle between single folder scan and full system scan."""
         if self.radio_full_system.isChecked():
-            # First-run friction guard confirmation dialog
-            if not config_manager.get("full_system_scan_confirmed", False):
+            # Per-session friction guard confirmation dialog (re-prompts once per app launch)
+            if not self._full_system_scan_confirmed:
                 res = QMessageBox.warning(
                     self,
                     "Confirm Full System Scan Scope",
@@ -628,8 +629,7 @@ class ScanView(QWidget):
                 if res != QMessageBox.Yes:
                     self.radio_dir_scan.setChecked(True)
                     return
-                config_manager.set("full_system_scan_confirmed", True)
-                config_manager.save()
+                self._full_system_scan_confirmed = True
 
             self.edit_folder.setEnabled(False)
             self.btn_browse.setEnabled(False)

@@ -58,6 +58,27 @@ class TestDriveScanner(unittest.TestCase):
         self.assertFalse(is_path_excluded(r"D:\CompanyData\Confidential\contracts.docx"))
         self.assertFalse(is_path_excluded(r"E:\Archive2026\employees.csv"))
 
+    def test_06_path_anchored_vs_non_system_drive(self):
+        """
+        Verify that path-anchored exclusions only match on the genuine SystemDrive,
+        and user-created folders with system names on non-system drives are scanned.
+        """
+        # On non-system drives (D:, E:), user folders named 'Windows' or 'Program Files' must NOT be excluded
+        self.assertFalse(is_path_excluded(r"D:\Windows\project_plan.docx"))
+        self.assertFalse(is_path_excluded(r"D:\Backups\Windows\passwords.txt"))
+        self.assertFalse(is_path_excluded(r"E:\UserData\Program Files\source_code.py"))
+        self.assertFalse(is_path_excluded(r"F:\Archive\ProgramData\client_records.csv"))
+
+        # Genuine SystemDrive system roots MUST still be excluded
+        sys_drive = os.getenv("SystemDrive", "C:")
+        self.assertTrue(is_path_excluded(f"{sys_drive}\\Windows\\System32\\calc.exe"))
+        self.assertTrue(is_path_excluded(f"{sys_drive}\\Program Files\\Vendor\\app.exe"))
+        self.assertTrue(is_path_excluded(f"{sys_drive}\\ProgramData\\config.xml"))
+
+        # Name-anywhere developer exclusions (node_modules, .git) must be excluded anywhere
+        self.assertTrue(is_path_excluded(r"D:\Projects\node_modules\pkg\index.js"))
+        self.assertTrue(is_path_excluded(r"E:\Source\.git\config"))
+
     def test_05_scanner_multi_folder_and_exclusion_pruning(self):
         """Verify Scanner iterates across multiple root paths and skips excluded subtrees."""
         with tempfile.TemporaryDirectory() as root_tmp:

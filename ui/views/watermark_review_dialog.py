@@ -319,6 +319,7 @@ class WatermarkReviewDialog(QDialog):
 
         succeeded = 0
         skipped = 0
+        in_use = []
         failed = []
 
         for i, item in enumerate(selected_candidates):
@@ -330,6 +331,12 @@ class WatermarkReviewDialog(QDialog):
                 succeeded += 1
             elif res.status == WatermarkStatus.SKIPPED_ALREADY_WATERMARKED:
                 skipped += 1
+            elif res.status == WatermarkStatus.SKIPPED_FILE_IN_USE:
+                in_use.append({
+                    "file": Path(file_path).name,
+                    "path": file_path,
+                    "reason": res.message
+                })
             else:
                 failed.append({
                     "file": Path(file_path).name,
@@ -343,6 +350,8 @@ class WatermarkReviewDialog(QDialog):
             "total_selected": len(selected_candidates),
             "succeeded": succeeded,
             "skipped": skipped,
+            "in_use_count": len(in_use),
+            "in_use": in_use,
             "failed_count": len(failed),
             "failures": failed
         }
@@ -354,14 +363,24 @@ class WatermarkReviewDialog(QDialog):
             f"Watermarking Complete:\n\n"
             f"  [OK] Successfully watermarked: {succeeded} files\n"
             f"  [SKIP] Skipped (already watermarked): {skipped} files\n"
-            f"  [FAIL] Failed: {len(failed)} files\n"
         )
+        if in_use:
+            summary_msg += f"  [IN USE] Skipped (file open/locked): {len(in_use)} files\n"
+        summary_msg += f"  [FAIL] Failed: {len(failed)} files\n"
+
+        if in_use:
+            summary_msg += "\nFiles Open in Another Application (Please close them before watermarking):\n"
+            for u in in_use[:5]:
+                summary_msg += f"• {u['file']}: {u['reason']}\n"
+            if len(in_use) > 5:
+                summary_msg += f"... and {len(in_use) - 5} more.\n"
+
         if failed:
             summary_msg += "\nFailed Files:\n"
             for f in failed[:5]:
                 summary_msg += f"• {f['file']}: {f['reason']}\n"
             if len(failed) > 5:
-                summary_msg += f"... and {len(failed) - 5} more."
+                summary_msg += f"... and {len(failed) - 5} more.\n"
 
         QMessageBox.information(self, "Watermarking Batch Summary", summary_msg)
         self.accept()

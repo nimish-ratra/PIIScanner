@@ -14,5 +14,9 @@ python-pptx>=1.0.0
 pypdf>=5.0.0
 reportlab>=4.0.0
 
+# Windows Platform Integration
+pywin32>=306
+
 # Packaging Dependencies
 pyinstaller>=6.10.0
+

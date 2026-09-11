@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, Tuple
 
 from backend.config import ConfigManager, get_watermark_backup_dir
 from backend.database import DatabaseManager, db_manager
@@ -36,9 +36,42 @@ class WatermarkStatus(str, Enum):
     APPLIED = "applied"
     SKIPPED_ALREADY_WATERMARKED = "skipped_already_watermarked"
     SKIPPED_BELOW_THRESHOLD = "skipped_below_threshold"
+    SKIPPED_FILE_IN_USE = "skipped_file_in_use"
     FAILED = "failed"
     REVERTED = "reverted"
     PENDING = "pending"
+
+
+def is_file_open_or_locked(path: Union[str, Path]) -> Tuple[bool, str]:
+    """
+    Check whether a target file is currently open in another application or locked.
+    1. For Office formats (.docx, .xlsx, .pptx, etc.), checks for sibling lock file (~$<filename>).
+    2. For any format, attempts exclusive read-write open on Windows.
+    Returns (is_in_use, reason).
+    """
+    p = Path(path).resolve()
+
+    # Check 1: Sibling Office lock file
+    office_exts = {".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt"}
+    if p.suffix.lower() in office_exts:
+        lock_file = p.parent / f"~${p.name}"
+        if lock_file.exists():
+            return True, f"Office lock file exists ({lock_file.name}) — file is currently open in Office"
+
+    # Check 2: Try opening file for exclusive read/write access briefly
+    try:
+        fd = os.open(str(p), os.O_RDWR)
+        os.close(fd)
+    except PermissionError as pe:
+        return True, f"Permission denied (file is locked or in use by another process: {pe})"
+    except OSError as oe:
+        # On Windows, error 32 is ERROR_SHARING_VIOLATION
+        if getattr(oe, "winerror", None) == 32:
+            return True, f"File sharing violation — currently open in another application: {oe}"
+    except Exception:
+        pass
+
+    return False, ""
 
 
 @dataclass
@@ -138,13 +171,17 @@ class XlsxWatermarkStrategy(WatermarkStrategy):
         import openpyxl
 
         wb = openpyxl.load_workbook(file_path)
-        banner = f"&B&12&K808080 {watermark_text}"
+        # Excel header/footer mini-language uses & for formatting codes (&B, &12, etc.)
+        # Literal ampersands must be escaped as && to avoid corrupting formatting
+        safe_wm_text = watermark_text.replace("&", "&&")
+        safe_tier = tier.replace("&", "&&")
+        banner = f"&B&12&K808080 {safe_wm_text}"
 
         for ws in wb.worksheets:
             # Set header and footer text
             ws.oddHeader.center.text = banner
             ws.evenHeader.center.text = banner
-            ws.oddFooter.center.text = f"&10&K808080 Classified by PII Sentinel — Tier: {tier}"
+            ws.oddFooter.center.text = f"&10&K808080 Classified by PII Sentinel — Tier: {safe_tier}"
             ws.evenFooter.center.text = ws.oddFooter.center.text
 
         wb.save(file_path)
@@ -187,7 +224,28 @@ class PptxWatermarkStrategy(WatermarkStrategy):
         if watermark_element is not None:
             for master in prs.slide_masters:
                 try:
-                    master.element.spTree.append(copy.deepcopy(watermark_element))
+                    master_elem = copy.deepcopy(watermark_element)
+
+                    # Gather existing shape IDs in master spTree to ensure unique ID
+                    existing_ids = set()
+                    for node in master.element.spTree.iter():
+                        if node.tag.endswith("cNvPr"):
+                            sid = node.get("id")
+                            if sid and sid.isdigit():
+                                existing_ids.add(int(sid))
+
+                    # Compute non-colliding ID
+                    new_id = max(max(existing_ids, default=0) + 1, 900001)
+                    while new_id in existing_ids:
+                        new_id += 1
+
+                    # Re-assign id on master element's cNvPr
+                    for node in master_elem.iter():
+                        if node.tag.endswith("cNvPr"):
+                            node.set("id", str(new_id))
+                            node.set("name", f"Watermark Shape {new_id}")
+
+                    master.element.spTree.append(master_elem)
                 except Exception as ex:
                     logger.debug(f"Could not append watermark to master spTree: {ex}")
 
@@ -317,7 +375,7 @@ class PlaintextAdsWatermarkStrategy(WatermarkStrategy):
     def apply(self, file_path: str, tier: str, watermark_text: str) -> bool:
         path = Path(file_path).resolve()
         
-        # 1. Tag via NTFS Alternate Data Stream
+        # 1. Tag via NTFS Alternate Data Stream (Primary Mechanism)
         ads_path = f"{path}:pii-sentinel-classification"
         ads_payload = {
             "tier": tier,
@@ -331,9 +389,10 @@ class PlaintextAdsWatermarkStrategy(WatermarkStrategy):
                 f_ads.write(json.dumps(ads_payload, indent=2))
             logger.info(f"[OK] Wrote NTFS ADS classification tag to {path.name}")
         except Exception as e:
-            logger.warning(f"Could not write NTFS ADS stream to {path.name}: {e}")
+            logger.error(f"[ERROR] Could not write NTFS ADS stream to {path.name}: {e}")
+            raise RuntimeError(f"NTFS ADS write failed — is this an NTFS volume? ({e})")
 
-        # 2. Attempt Windows Shell property store (Comments / Keywords)
+        # 2. Attempt Windows Shell property store (Comments / Keywords) as secondary Explorer metadata
         try:
             from win32com.propsys import propsys, pscon
             # GPS_READWRITE = 2
@@ -347,9 +406,9 @@ class PlaintextAdsWatermarkStrategy(WatermarkStrategy):
             store.SetValue(pscon.PKEY_Comment, prop)
             store.Commit()
             logger.info(f"[OK] Wrote Windows Shell comment property to {path.name}")
-        except Exception:
+        except Exception as ex:
             # Non-fatal on filesystems or formats without Shell property handler support
-            pass
+            logger.debug(f"Optional Windows Shell property store note for {path.name}: {ex}")
 
         return True
 
@@ -489,7 +548,33 @@ class WatermarkEngine:
                     message="Already watermarked; content hash unchanged."
                 )
 
-        # 4. Create pre-mutation byte-for-byte backup
+        # 4. Handle Dry-Run Mode (Fast & safe: no backup taken until user confirms mutation)
+        if dry_run:
+            return WatermarkResult(
+                file_path=file_str,
+                status=WatermarkStatus.PENDING,
+                method=self.get_strategy_for_file(path).method_name,
+                tier=tier,
+                content_hash=content_hash,
+                backup_path=None,
+                message="Dry run: candidate verified and eligible."
+            )
+
+        # 5. Check if file is currently open or locked by another application
+        is_in_use, in_use_reason = is_file_open_or_locked(path)
+        if is_in_use:
+            logger.warning(f"[SKIP] File {path.name} is in use: {in_use_reason}")
+            return WatermarkResult(
+                file_path=file_str,
+                status=WatermarkStatus.SKIPPED_FILE_IN_USE,
+                method=self.get_strategy_for_file(path).method_name,
+                tier=tier,
+                content_hash=content_hash,
+                backup_path=None,
+                message=f"File in use: {in_use_reason}. Close this file before watermarking."
+            )
+
+        # 6. Create pre-mutation byte-for-byte backup
         try:
             backup_hash, backup_path = create_watermark_backup(path, backup_dir=self.backup_dir)
         except Exception as e:
@@ -502,18 +587,6 @@ class WatermarkEngine:
                 tier=tier,
                 content_hash=content_hash,
                 message=f"Pre-mutation backup failed: {e}"
-            )
-
-        # 5. Handle Dry-Run Mode
-        if dry_run:
-            return WatermarkResult(
-                file_path=file_str,
-                status=WatermarkStatus.PENDING,
-                method=self.get_strategy_for_file(path).method_name,
-                tier=tier,
-                content_hash=content_hash,
-                backup_path=backup_path,
-                message="Dry run: candidate identified and backup staged."
             )
 
         # 6. Apply format-specific watermarking strategy
