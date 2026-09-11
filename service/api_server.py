@@ -341,6 +341,14 @@ def update_policy(updates: Dict[str, Any]):
         logger.info(f"Real-time selected entities updated via /policy: {len(updates['realtime_selected_entities'])} active.")
     policy_manager.update_from_dict(updates)
     logger.info("Enforcement policy updated via API.")
+
+    # Hot-reload file watcher observer with updated watched folders / settings
+    if hasattr(app.state, "runner") and app.state.runner:
+        try:
+            app.state.runner.reload_watcher()
+        except Exception as e:
+            logger.warning(f"Could not hot-reload file watcher: {e}")
+
     data = policy_manager.to_dict()
     data["realtime_selected_entities"] = config_manager.realtime_selected_entities
     return {"success": True, "policy": data}

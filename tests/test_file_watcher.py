@@ -138,6 +138,22 @@ class TestFileWatcher(unittest.TestCase):
         # Benign file must still exist
         self.assertTrue(clean_file.exists())
 
+    def test_05_unwatched_folder_ignored(self):
+        """Verify that files outside active watched_folders are strictly ignored and never touched."""
+        unwatched_folder = self.temp_dir / "unwatched"
+        unwatched_folder.mkdir(parents=True, exist_ok=True)
+        unwatched_file = unwatched_folder / "aadhaar_unwatched.txt"
+        unwatched_file.write_text("AADHAAR: 3675 9834 5012, PAN: ABCDE1234F", encoding="utf-8")
+        self.assertTrue(unwatched_file.exists())
+
+        svc = FileWatcherService()
+        handler = FileSaveEventHandler(svc)
+        self.assertFalse(handler._is_in_watched_folders(unwatched_file))
+
+        # Inspect and enforce must reject files outside watched folders
+        svc.inspect_and_enforce(str(unwatched_file))
+        self.assertTrue(unwatched_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

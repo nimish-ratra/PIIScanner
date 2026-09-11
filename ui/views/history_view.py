@@ -231,9 +231,14 @@ class HistoryView(QWidget):
             item_date.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row_idx, 0, item_date)
 
-            # Target Folder
-            item_folder = QTableWidgetItem(scan.get("target_folder", ""))
-            item_folder.setToolTip(scan.get("target_folder", ""))
+            # Target Folder & Scan Source
+            target_str = scan.get("target_folder", "")
+            if scan.get("scan_source") == "full_system_scan":
+                display_target = f"🖥️ [Full System] {target_str}"
+            else:
+                display_target = f"📁 {target_str}"
+            item_folder = QTableWidgetItem(display_target)
+            item_folder.setToolTip(f"Scan Source: {scan.get('scan_source', 'directory_scan')}\nTarget: {target_str}")
             self.table.setItem(row_idx, 1, item_folder)
 
             # Files Scanned

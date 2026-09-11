@@ -26,6 +26,9 @@ from backend.file_ops import (
 )
 from backend.config import config_manager
 from backend.classifier import SensitivityTier, TIER_METADATA
+from backend.watermark_backup import restore_watermark_backup
+from backend.database import db_manager
+from ui.views.watermark_review_dialog import WatermarkReviewDialog
 
 
 
@@ -181,27 +184,41 @@ class ResultsView(QWidget):
         self.btn_quarantine.clicked.connect(self._on_quarantine_files)
         self.btn_quarantine.setEnabled(False)
 
+        self.btn_review_watermarks = QPushButton("🛡️ Watermark Candidates", self)
+        self.btn_review_watermarks.setFixedHeight(32)
+        self.btn_review_watermarks.clicked.connect(self._on_open_watermark_review)
+        self.btn_review_watermarks.setEnabled(False)
+
+        self.btn_undo_watermark = QPushButton("↺ Undo Watermark", self)
+        self.btn_undo_watermark.setFixedHeight(32)
+        self.btn_undo_watermark.clicked.connect(self._on_undo_watermark_selected)
+        self.btn_undo_watermark.setEnabled(False)
+
         actions_bar.addWidget(self.btn_export_csv)
         actions_bar.addWidget(self.btn_extract)
         actions_bar.addWidget(self.btn_quarantine)
+        actions_bar.addWidget(self.btn_review_watermarks)
+        actions_bar.addWidget(self.btn_undo_watermark)
 
         main_layout.addLayout(actions_bar)
 
         # 3. Findings Table
         self.table = QTableWidget(self)
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
-            "File Path", "Entity Type", "Sensitivity", "Value (Redacted)", "Confidence", "File Size", "Last Modified"
+            "File Path", "Entity Type", "Sensitivity", "Value (Redacted)",
+            "Confidence", "File Size", "Last Modified", "Watermark"
         ])
         # Make File Path column interactive with generous width so users can inspect and resize with no forced clipping
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)
-        self.table.setColumnWidth(0, 380)
+        self.table.setColumnWidth(0, 360)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
@@ -211,8 +228,13 @@ class ResultsView(QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         self.table.doubleClicked.connect(self._on_row_double_clicked)
+        self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
 
         main_layout.addWidget(self.table)
+
+    def _on_table_selection_changed(self) -> None:
+        has_sel = len(self.table.selectedItems()) > 0
+        self.btn_undo_watermark.setEnabled(has_sel)
 
     def set_scan_results(self, summary: Dict[str, Any], findings: List[Dict[str, Any]]) -> None:
         """Load scan summary and findings into the table."""
@@ -232,6 +254,8 @@ class ResultsView(QWidget):
         self.btn_export_csv.setEnabled(has_findings)
         self.btn_extract.setEnabled(has_findings)
         self.btn_quarantine.setEnabled(has_findings)
+        self.btn_review_watermarks.setEnabled(has_findings)
+        self.btn_undo_watermark.setEnabled(False)
 
         # Update entity combo box
         current_entity = self.combo_entity.currentText()
@@ -319,6 +343,30 @@ class ResultsView(QWidget):
             item_time.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row_idx, 6, item_time)
 
+            # 7. Watermark Status
+            wm_status = item.get("watermark_status", "none")
+            if wm_status == "applied":
+                wm_text = "🏷️ Watermarked"
+                wm_color = "#34d399"
+            elif wm_status == "reverted":
+                wm_text = "↺ Reverted"
+                wm_color = "#94a3b8"
+            elif wm_status == "failed":
+                wm_text = "❌ Failed"
+                wm_color = "#f87171"
+            elif wm_status == "pending":
+                wm_text = "⏳ Pending"
+                wm_color = "#fbbf24"
+            else:
+                wm_text = "—"
+                wm_color = "#64748b"
+
+            item_wm = QTableWidgetItem(wm_text)
+            item_wm.setTextAlignment(Qt.AlignCenter)
+            item_wm.setForeground(QColor(wm_color))
+            item_wm.setToolTip(f"Watermark Status: {wm_status}\nMethod: {item.get('watermark_method', 'N/A')}")
+            self.table.setItem(row_idx, 7, item_wm)
+
         self.table.setSortingEnabled(True)
 
     def _on_toggle_reveal(self, checked: bool) -> None:
@@ -391,11 +439,10 @@ class ResultsView(QWidget):
             dlg.exec()
 
     def _show_context_menu(self, pos) -> None:
-        item = self.table.itemAt(pos)
-        if not item:
+        row = self.table.rowAt(pos.y())
+        if row < 0:
             return
 
-        row = item.row()
         file_path_item = self.table.item(row, 0)
         val_item = self.table.item(row, 3)
         if not file_path_item:
@@ -437,7 +484,94 @@ class ResultsView(QWidget):
             action_copy_red.triggered.connect(lambda: QGuiApplication.clipboard().setText(redacted_val))
             menu.addAction(action_copy_red)
 
+        menu.addSeparator()
+
+        action_undo_wm = QAction("↺ Undo Watermark (Restore Pre-Mutation Backup)", self)
+        action_undo_wm.triggered.connect(lambda: self._undo_watermark_for_file(file_path))
+        menu.addAction(action_undo_wm)
+
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _on_undo_watermark_selected(self) -> None:
+        """Undo watermark on the currently selected table row."""
+        selected_rows = self.table.selectedItems()
+        if not selected_rows:
+            QMessageBox.information(self, "No Row Selected", "Please select a file row to undo watermarking.")
+            return
+        row = selected_rows[0].row()
+        file_item = self.table.item(row, 0)
+        if file_item:
+            self._undo_watermark_for_file(file_item.text())
+
+    def _undo_watermark_for_file(self, file_path: str) -> None:
+        """Revert watermark on the file, restoring pre-mutation backup byte-for-byte."""
+        reply = QMessageBox.question(
+            self,
+            "Confirm Undo Watermark",
+            f"Are you sure you want to revert the watermark on:\n{os.path.basename(file_path)}\n\n"
+            "This will restore the file byte-for-byte from its pre-mutation backup store.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        success, msg = restore_watermark_backup(file_path)
+        if success:
+            QMessageBox.information(
+                self,
+                "Watermark Reverted",
+                f"Successfully restored {os.path.basename(file_path)} to its pre-watermark state.\n\n"
+                "Registry has been updated to reverted."
+            )
+            for f in self.findings:
+                if f.get("file") == file_path:
+                    f["watermark_status"] = "reverted"
+            self._apply_filters()
+        else:
+            QMessageBox.warning(self, "Undo Failed", f"Could not restore file:\n{msg}")
+
+    def _on_open_watermark_review(self) -> None:
+        """Open the watermark candidates review dialog for this scan."""
+        scan_id = self.scan_summary.get("scan_id")
+        min_tier = config_manager.get("watermark_min_tier", "Confidential")
+        candidates = db_manager.get_watermark_candidates(scan_id=scan_id, min_tier=min_tier)
+        if not candidates:
+            # Fallback construct candidates from current in-memory findings
+            file_map = {}
+            for f in self.findings:
+                fp = f.get("file", "")
+                if fp not in file_map:
+                    file_map[fp] = {
+                        "file_path": fp,
+                        "tier": f.get("classification", "Confidential"),
+                        "finding_count": 0,
+                        "entities": set(),
+                        "file_size_bytes": f.get("file_size_bytes", 0),
+                        "watermark_status": f.get("watermark_status", "none")
+                    }
+                file_map[fp]["finding_count"] += 1
+                file_map[fp]["entities"].add(f.get("entity", ""))
+            candidates = [
+                {**v, "entities": ", ".join(sorted(list(v["entities"])))}
+                for v in file_map.values()
+            ]
+
+        if not candidates:
+            QMessageBox.information(self, "No Candidates", "No sensitive files eligible for watermarking found.")
+            return
+
+        dlg = WatermarkReviewDialog(candidates, self)
+        dlg.watermarking_completed.connect(self._on_watermarking_batch_done)
+        dlg.exec()
+
+    def _on_watermarking_batch_done(self, summary: dict) -> None:
+        scan_id = self.scan_summary.get("scan_id")
+        if scan_id:
+            updated_findings = db_manager.get_findings_for_scan(scan_id)
+            if updated_findings:
+                self.findings = updated_findings
+                self._apply_filters()
 
     def _on_open_html_report(self) -> None:
         html_path = self.scan_summary.get("report_html")
@@ -469,6 +603,7 @@ class ResultsView(QWidget):
                 "confidence": self.table.item(r, 4).text(),
                 "file_size": self.table.item(r, 5).text(),
                 "last_modified": self.table.item(r, 6).text(),
+                "watermark": self.table.item(r, 7).text() if self.table.item(r, 7) else "none",
             })
 
         try:

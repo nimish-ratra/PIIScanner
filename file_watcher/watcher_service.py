@@ -85,12 +85,34 @@ class FileSaveEventHandler(FileSystemEventHandler):
 
         return False
 
+    def _is_in_watched_folders(self, path: Path) -> bool:
+        """Verify that the target path resides within an actively monitored folder."""
+        watched = policy_manager.watched_folders
+        if not watched:
+            return False
+        try:
+            resolved_target = path.resolve()
+            for w in watched:
+                try:
+                    w_path = Path(w).resolve()
+                    if resolved_target == w_path or w_path in resolved_target.parents:
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
     def _handle_file(self, file_path_str: str) -> None:
         """Debounce and dispatch file inspection in a worker thread."""
         if self.watcher.is_paused:
             return
 
         path = Path(file_path_str)
+        # Verify file is inside currently monitored watched folders
+        if not self._is_in_watched_folders(path):
+            return
+
         if self._should_ignore(path):
             return
 
@@ -156,7 +178,14 @@ class FileWatcherService:
                 self.observer.join(timeout=3.0)
             except Exception as e:
                 logger.debug(f"Observer stop note: {e}")
+            self.observer = None
             logger.info("File Watcher stopped.")
+
+    def reload_watched_folders(self) -> None:
+        """Dynamically reload the watched directories without restarting the whole process."""
+        logger.info("Dynamically reloading File Watcher watched folders...")
+        self.stop()
+        self.start()
 
     def _wait_for_file_ready(self, file_path: Path, max_attempts: int = 5) -> bool:
         """Wait until editor releases write lock on the file."""
@@ -179,6 +208,10 @@ class FileWatcherService:
         and execute quarantine or warning per policy.
         """
         path = Path(file_path_str)
+        # Verify file is inside actively watched folders
+        if not self.handler._is_in_watched_folders(path):
+            return
+
         if not self._wait_for_file_ready(path):
             return
 

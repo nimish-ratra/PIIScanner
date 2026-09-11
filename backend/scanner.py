@@ -12,7 +12,7 @@ import threading
 import concurrent.futures
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable, Set
+from typing import List, Dict, Any, Optional, Callable, Set, Union
 
 from backend.config import get_reports_dir, DEFAULT_EXTENSIONS
 from backend.tika_extractor import TikaExtractor
@@ -26,22 +26,32 @@ logger = logging.getLogger(__name__)
 
 class Scanner:
     """
-    Core scanning engine that inspects a directory recursively for PII.
+    Core scanning engine that inspects directory trees or full local drives recursively for PII.
     Thread-safe execution with pause, resume, and stop controls.
     """
 
     def __init__(
         self,
-        target_folder: str,
+        target_folder: Union[str, List[str]],
         supported_extensions: Optional[List[str]] = None,
         confidence_threshold: float = 0.6,
         selected_entities: Optional[List[str]] = None,
         max_file_size_mb: int = 50,
         max_workers: int = 2,
         ocr_enabled: bool = False,
-        reports_dir: Optional[str] = None
+        reports_dir: Optional[str] = None,
+        scan_source: str = "directory_scan",
+        exclusion_patterns: Optional[List[str]] = None
     ):
-        self.target_folder = str(Path(target_folder).resolve())
+        if isinstance(target_folder, list):
+            self.target_folders = [str(Path(f).resolve()) for f in target_folder]
+            self.target_folder = ", ".join(self.target_folders) if len(self.target_folders) > 1 else self.target_folders[0]
+        else:
+            self.target_folders = [str(Path(target_folder).resolve())]
+            self.target_folder = self.target_folders[0]
+
+        self.scan_source = scan_source
+        self.exclusion_patterns = exclusion_patterns
         self.supported_extensions: Set[str] = {
             ext.lower() if ext.startswith(".") else f".{ext.lower()}"
             for ext in (supported_extensions or DEFAULT_EXTENSIONS)
@@ -125,18 +135,33 @@ class Scanner:
             self.on_log(msg, "WARNING")
 
     def _count_eligible_files(self) -> List[str]:
-        """Pre-collect eligible file paths for accurate progress tracking."""
+        """Pre-collect eligible file paths for accurate progress tracking across all target folders."""
+        from backend.drive_scanner import is_path_excluded
+
         eligible = []
-        try:
-            for dirpath, _, filenames in os.walk(self.target_folder):
-                if self._stop_event.is_set():
-                    break
-                for filename in filenames:
-                    ext = os.path.splitext(filename)[1].lower()
-                    if ext in self.supported_extensions:
-                        eligible.append(os.path.join(dirpath, filename))
-        except Exception as e:
-            self._log_warning(f"Error enumerating folder {self.target_folder}: {e}")
+        for folder in self.target_folders:
+            if not os.path.exists(folder):
+                continue
+            try:
+                for dirpath, dirnames, filenames in os.walk(folder):
+                    if self._stop_event.is_set():
+                        break
+
+                    # Prune excluded directories in-place so os.walk skips descending into them
+                    if self.exclusion_patterns:
+                        dirnames[:] = [
+                            d for d in dirnames
+                            if not is_path_excluded(os.path.join(dirpath, d), self.exclusion_patterns)
+                        ]
+
+                    for filename in filenames:
+                        ext = os.path.splitext(filename)[1].lower()
+                        if ext in self.supported_extensions:
+                            full_path = os.path.join(dirpath, filename)
+                            if not (self.exclusion_patterns and is_path_excluded(full_path, self.exclusion_patterns)):
+                                eligible.append(full_path)
+            except Exception as e:
+                self._log_warning(f"Error enumerating folder {folder}: {e}")
         return eligible
 
     def _scan_single_file(self, filepath: str, total_files: int) -> None:
@@ -319,6 +344,7 @@ class Scanner:
         scan_meta = {
             "scan_id": self.scan_id,
             "target_folder": self.target_folder,
+            "scan_source": self.scan_source,
             "started_at": datetime.fromtimestamp(self.start_time).strftime("%Y-%m-%d %H:%M:%S"),
             "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "duration_seconds": self.duration_seconds,

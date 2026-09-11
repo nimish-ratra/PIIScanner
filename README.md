@@ -176,6 +176,11 @@ python -m unittest tests/test_enforcement_service.py
 
 # Phase 2: File watcher debounce, quarantine bridge, and toast notification
 python -m unittest tests/test_file_watcher.py
+
+# Phase 3A: Drive scanner, watermark engine, pre-mutation backup & rollback
+python -m unittest tests/test_drive_scanner.py
+python -m unittest tests/test_watermark_backup.py
+python -m unittest tests/test_watermark_engine.py
 ```
 
 ---

@@ -12,18 +12,22 @@ from typing import List, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSlider, QProgressBar, QFileDialog, QGroupBox,
-    QCheckBox, QScrollArea, QGridLayout, QFrame, QMessageBox
+    QCheckBox, QScrollArea, QGridLayout, QFrame, QMessageBox,
+    QRadioButton, QButtonGroup
 )
 from PySide6.QtCore import Qt, Signal, QThread
 
 from backend.config import config_manager
 from backend.presidio_detector import PresidioDetector
+from backend.drive_scanner import get_fixed_drives
+from backend.database import db_manager
 from ui.components.stat_card import StatCard
 from ui.components.log_viewer import LogViewer
 from ui.components.pii_selector_dialog import (
     PiiSelectorDialog, PiiViewerDialog, FileViewerDialog, ENTITY_CATEGORIES
 )
 from ui.workers.scan_worker import ScanWorker
+from ui.views.watermark_review_dialog import WatermarkReviewDialog
 
 
 class FolderPreviewWorker(QThread):
@@ -113,10 +117,26 @@ class ScanView(QWidget):
         main_layout.addLayout(header_vbox)
 
         # 2. Target Directory Card
-        dir_group = QGroupBox("Target Directory", container)
+        dir_group = QGroupBox("Scan Scope & Target", container)
         dir_layout = QVBoxLayout(dir_group)
         dir_layout.setContentsMargins(16, 14, 16, 14)
-        dir_layout.setSpacing(8)
+        dir_layout.setSpacing(10)
+
+        # Mode Selection: Single Directory vs Full System Scan
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(16)
+        self.radio_dir_scan = QRadioButton("Target Directory", dir_group)
+        self.radio_dir_scan.setChecked(True)
+        self.radio_full_system = QRadioButton("Full System Scan (All Local Fixed Drives)", dir_group)
+        self.btn_group_mode = QButtonGroup(dir_group)
+        self.btn_group_mode.addButton(self.radio_dir_scan)
+        self.btn_group_mode.addButton(self.radio_full_system)
+        self.radio_dir_scan.toggled.connect(self._on_scan_mode_changed)
+
+        scope_row.addWidget(self.radio_dir_scan)
+        scope_row.addWidget(self.radio_full_system)
+        scope_row.addStretch()
+        dir_layout.addLayout(scope_row)
 
         input_row = QHBoxLayout()
         input_row.setSpacing(10)
@@ -589,11 +609,63 @@ class ScanView(QWidget):
             tier = f"{val} Workers [Turbo]"
         self.lbl_workers_val.setText(tier)
 
+    def _on_scan_mode_changed(self) -> None:
+        """Handle toggle between single folder scan and full system scan."""
+        if self.radio_full_system.isChecked():
+            # First-run friction guard confirmation dialog
+            if not config_manager.get("full_system_scan_confirmed", False):
+                res = QMessageBox.warning(
+                    self,
+                    "Confirm Full System Scan Scope",
+                    "Launching a Full System Scan will inspect every fixed local drive on this computer.\n\n"
+                    "Because this encompasses your entire filesystem, the scan may take a long time.\n\n"
+                    "Default noise/system directories (Windows, Program Files, ProgramData, node_modules, .git) "
+                    "will be automatically skipped to optimize speed.\n\n"
+                    "Do you wish to proceed with Full System Scan mode?",
+                    QMessageBox.Yes | QMessageBox.Cancel,
+                    QMessageBox.Cancel
+                )
+                if res != QMessageBox.Yes:
+                    self.radio_dir_scan.setChecked(True)
+                    return
+                config_manager.set("full_system_scan_confirmed", True)
+                config_manager.save()
+
+            self.edit_folder.setEnabled(False)
+            self.btn_browse.setEnabled(False)
+            drives = get_fixed_drives()
+            drive_names = [f"{d.mountpoint} ({d.fstype or 'Fixed'})" for d in drives]
+            self.lbl_folder_preview.setText(
+                f"🖥️ Full System Scope: {len(drives)} local fixed drive(s) detected: [{', '.join(drive_names)}]. "
+                "System folders (Windows, Program Files, ProgramData, node_modules, .git) excluded."
+            )
+            self.lbl_folder_preview.setStyleSheet("color: #38bdf8; font-size: 12px; font-weight: 600;")
+            self.btn_view_all_files.setVisible(False)
+        else:
+            self.edit_folder.setEnabled(True)
+            self.btn_browse.setEnabled(True)
+            self._update_folder_preview()
+
     def _on_start_scan(self) -> None:
-        folder = self.edit_folder.text().strip()
-        if not folder or not os.path.isdir(folder):
-            QMessageBox.warning(self, "Invalid Directory", "Please select a valid existing directory to scan.")
-            return
+        is_full_system = self.radio_full_system.isChecked()
+        if is_full_system:
+            drives = get_fixed_drives()
+            if not drives:
+                QMessageBox.warning(self, "No Fixed Drives", "No fixed local drives detected on this system.")
+                return
+            target_folder = [d.mountpoint for d in drives]
+            scan_source = "full_system_scan"
+            exclusions = config_manager.get("system_scan_exclusions", [])
+            display_target = ", ".join(d.mountpoint for d in drives)
+        else:
+            folder = self.edit_folder.text().strip()
+            if not folder or not os.path.isdir(folder):
+                QMessageBox.warning(self, "Invalid Directory", "Please select a valid existing directory to scan.")
+                return
+            target_folder = folder
+            scan_source = "directory_scan"
+            exclusions = []
+            display_target = folder
 
         # Check if at least one entity is selected
         active_entities = self._get_active_entities()
@@ -608,13 +680,15 @@ class ScanView(QWidget):
         self.card_findings.set_value("0")
         self.card_rate.set_value("0 f/s")
         self.card_time.set_value("0.0s")
-        self.lbl_current_file.setText(f"Initializing scan for {folder}...")
+        self.lbl_current_file.setText(f"Initializing scan for {display_target}...")
         self.log_viewer.clear()
 
         # Update button and input states
         self.btn_start.setEnabled(False)
         self.btn_browse.setEnabled(False)
         self.edit_folder.setEnabled(False)
+        self.radio_dir_scan.setEnabled(False)
+        self.radio_full_system.setEnabled(False)
         self.slider_threshold.setEnabled(False)
         self.slider_workers.setEnabled(False)
         self.btn_pause.setEnabled(True)
@@ -627,13 +701,15 @@ class ScanView(QWidget):
         config_manager.max_workers = workers
 
         self.worker = ScanWorker(
-            target_folder=folder,
+            target_folder=target_folder,
             confidence_threshold=threshold,
             selected_entities=active_entities,
             supported_extensions=config_manager.supported_extensions,
             max_file_size_mb=config_manager.max_file_size_mb,
             max_workers=workers,
             ocr_enabled=config_manager.ocr_enabled,
+            scan_source=scan_source,
+            exclusion_patterns=exclusions,
             parent=self
         )
 
@@ -703,7 +779,9 @@ class ScanView(QWidget):
         # Restore button states
         self.btn_start.setEnabled(True)
         self.btn_browse.setEnabled(True)
-        self.edit_folder.setEnabled(True)
+        self.edit_folder.setEnabled(not self.radio_full_system.isChecked())
+        self.radio_dir_scan.setEnabled(True)
+        self.radio_full_system.setEnabled(True)
         self.slider_threshold.setEnabled(True)
         self.slider_workers.setEnabled(True)
         self.btn_pause.setEnabled(False)
@@ -712,6 +790,15 @@ class ScanView(QWidget):
 
         # Notify parent / main window
         self.scan_completed_signal.emit(summary)
+
+        # Section 3: Watermark Candidates Review Workflow
+        if config_manager.get("watermark_enabled", True):
+            scan_id = summary.get("scan_id")
+            min_tier = config_manager.get("watermark_min_tier", "Confidential")
+            candidates = db_manager.get_watermark_candidates(scan_id=scan_id, min_tier=min_tier)
+            if candidates and os.environ.get("QT_QPA_PLATFORM") != "offscreen":
+                dlg = WatermarkReviewDialog(candidates, self)
+                dlg.exec()
 
     def _on_worker_error(self, err_msg: str) -> None:
         QMessageBox.critical(self, "Scan Error", f"An error occurred during the scan:\n{err_msg}")

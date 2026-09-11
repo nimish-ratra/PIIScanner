@@ -112,6 +112,16 @@ class EnforcementServiceRunner:
         except Exception as e:
             logger.warning(f"Could not start File Watcher: {e}")
 
+    def reload_watcher(self) -> None:
+        """Reload file watcher with updated policy folders."""
+        if self._watcher:
+            logger.info("Reloading File Watcher with updated policy configuration...")
+            self._watcher.reload_watched_folders()
+            watched = policy_manager.watched_folders
+            logger.info(f"File Watcher now monitoring {len(watched)} folder(s): {watched}")
+        elif self.enable_watcher and policy_manager.enforce_watcher:
+            self.start_watcher()
+
     def stop(self) -> None:
         """Clean shutdown of API server, watcher, and tray icon."""
         self._is_running = False

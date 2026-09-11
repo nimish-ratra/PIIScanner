@@ -18,6 +18,18 @@ datas = []
 datas += collect_data_files("presidio_analyzer")
 datas += collect_data_files("en_core_web_sm")
 datas.append((os.path.join(project_root, "packaging", "assets"), os.path.join("packaging", "assets")))
+try:
+    datas += collect_data_files("docx")
+except Exception:
+    pass
+try:
+    datas += collect_data_files("pptx")
+except Exception:
+    pass
+try:
+    datas += collect_data_files("reportlab")
+except Exception:
+    pass
 
 # Collect hidden imports
 hiddenimports = [
@@ -34,12 +46,29 @@ hiddenimports = [
     "json",
     "PIL",
     "backend.classifier",
+    "docx",
+    "openpyxl",
+    "pptx",
+    "pypdf",
+    "reportlab",
+    "psutil",
+    "win32file",
+    "win32api",
+    "win32con",
+    "win32com",
+    "win32com.propsys",
 ]
 hiddenimports += collect_submodules("presidio_analyzer")
 hiddenimports += collect_submodules("spacy")
 hiddenimports += collect_submodules("thinc")
 hiddenimports += collect_submodules("blis")
 hiddenimports += collect_submodules("en_core_web_sm")
+hiddenimports += collect_submodules("docx")
+hiddenimports += collect_submodules("openpyxl")
+hiddenimports += collect_submodules("pptx")
+hiddenimports += collect_submodules("pypdf")
+hiddenimports += collect_submodules("reportlab")
+hiddenimports += collect_submodules("psutil")
 
 icon_file = os.path.join(project_root, "packaging", "assets", "app_icon.ico")
 

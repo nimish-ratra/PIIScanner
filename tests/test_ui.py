@@ -99,7 +99,7 @@ class TestUI(unittest.TestCase):
 
         self.window.view_results.set_scan_results(summary, findings)
         self.assertEqual(self.window.view_results.table.rowCount(), 2)
-        self.assertEqual(self.window.view_results.table.columnCount(), 7)
+        self.assertEqual(self.window.view_results.table.columnCount(), 8)
 
         # Verify sensitivity badges in column 2
         self.assertIn("Confidential", self.window.view_results.table.item(0, 2).text())

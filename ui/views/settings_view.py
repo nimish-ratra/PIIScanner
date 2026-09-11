@@ -22,10 +22,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
-from backend.config import config_manager, DEFAULT_EXTENSIONS
+from backend.config import config_manager, DEFAULT_EXTENSIONS, get_watermark_backup_dir
 from backend.tika_extractor import check_java_status, check_tesseract_status
 from backend.classifier import TIER_METADATA, SensitivityTier
 from backend.custom_recognizers import get_all_supported_entities
+from backend.watermark_backup import prune_watermark_backups
+from backend.file_ops import reveal_in_explorer
+from backend.drive_scanner import DEFAULT_SYSTEM_EXCLUSIONS
 from ui.components.pii_selector_dialog import (
     PiiSelectorDialog, PiiViewerDialog, ENTITY_CATEGORIES
 )
@@ -71,6 +74,10 @@ class SettingsView(QWidget):
         # Tab 2: Enforcement Policy
         tab_enforcement = self._create_enforcement_tab()
         self.tabs.addTab(tab_enforcement, "🛡️ Real-Time Enforcement Policy")
+
+        # Tab 3: Watermarking & Safety Net
+        tab_watermarking = self._create_watermarking_tab()
+        self.tabs.addTab(tab_watermarking, "🏷️ Watermarking & Data Protection")
 
         main_layout.addWidget(self.tabs)
 
@@ -545,6 +552,237 @@ class SettingsView(QWidget):
         scroll.setWidget(container)
         return scroll
 
+    def _create_watermarking_tab(self) -> QWidget:
+        """Create configuration tab for Watermarking, Exclusions, and Pre-Mutation Backups."""
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background: transparent; border: none;")
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(18)
+
+        # 1. Approval Mode & Lifecycle Card
+        grp_approval = QGroupBox("Review & Approval Workflow", container)
+        vbox_app = QVBoxLayout(grp_approval)
+        vbox_app.setSpacing(10)
+
+        self.chk_watermark_enabled = QCheckBox("Enable Document Watermarking & Classification Tagging", grp_approval)
+        self.chk_watermark_enabled.setChecked(config_manager.get("watermark_enabled", True))
+        vbox_app.addWidget(self.chk_watermark_enabled)
+
+        lbl_app_mode = QLabel("Approval Workflow Mode:", grp_approval)
+        lbl_app_mode.setStyleSheet("font-weight: 600; color: #e2e8f0;")
+        vbox_app.addWidget(lbl_app_mode)
+
+        self.combo_approval_mode = QComboBox(grp_approval)
+        self.combo_approval_mode.addItem("Manual Approval per Batch (Default & Recommended)", "manual")
+        self.combo_approval_mode.addItem("Automatic on Scan Completion (Future Scaffold)", "auto")
+        self.combo_approval_mode.currentIndexChanged.connect(self._on_approval_mode_changed)
+        vbox_app.addWidget(self.combo_approval_mode)
+
+        self.lbl_auto_notice = QLabel(
+            "ℹ️ Notice: Automatic watermarking isn't available yet in this version. "
+            "Scans will always prompt for per-batch manual review before any files are altered.",
+            grp_approval
+        )
+        self.lbl_auto_notice.setStyleSheet(
+            "background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.35); "
+            "border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600;"
+        )
+        self.lbl_auto_notice.setVisible(False)
+        vbox_app.addWidget(self.lbl_auto_notice)
+
+        layout.addWidget(grp_approval)
+
+        # 2. Sensitivity Threshold & Branding Template Card
+        grp_tpl = QGroupBox("Sensitivity Threshold & Template", container)
+        vbox_tpl = QVBoxLayout(grp_tpl)
+        vbox_tpl.setSpacing(10)
+
+        lbl_tier = QLabel("Minimum Sensitivity Threshold for Watermarking:", grp_tpl)
+        lbl_tier.setStyleSheet("font-weight: 600; color: #e2e8f0;")
+        vbox_tpl.addWidget(lbl_tier)
+
+        self.combo_min_tier = QComboBox(grp_tpl)
+        self.combo_min_tier.addItem("Confidential (Default — Confidential, Highly Confidential, Restricted)", "Confidential")
+        self.combo_min_tier.addItem("Highly Confidential (Highly Confidential and Restricted only)", "Highly Confidential")
+        self.combo_min_tier.addItem("Restricted (Restricted files only)", "Restricted")
+        vbox_tpl.addWidget(self.combo_min_tier)
+
+        lbl_tpl = QLabel("Watermark Display Template:", grp_tpl)
+        lbl_tpl.setStyleSheet("font-weight: 600; color: #e2e8f0;")
+        vbox_tpl.addWidget(lbl_tpl)
+
+        self.edit_template = QLineEdit(grp_tpl)
+        self.edit_template.setText(config_manager.get(
+            "watermark_template",
+            "CONFIDENTIAL — Classified by PII Sentinel — {tier} — {date} — Do Not Distribute"
+        ))
+        vbox_tpl.addWidget(self.edit_template)
+
+        lbl_tokens = QLabel(
+            "Supported dynamic placeholders: {tier} (e.g. Confidential), {date} (YYYY-MM-DD), {time} (HH:MM:SS), {filename}.",
+            grp_tpl
+        )
+        lbl_tokens.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        vbox_tpl.addWidget(lbl_tokens)
+
+        layout.addWidget(grp_tpl)
+
+        # 3. Full System Scan Noise Exclusions Card
+        grp_excl = QGroupBox("Full System Scan Directory Exclusions", container)
+        vbox_excl = QVBoxLayout(grp_excl)
+        vbox_excl.setSpacing(8)
+
+        lbl_excl_desc = QLabel(
+            "Directories and subtrees skipped during Full System Scans to optimize speed and avoid OS noise:",
+            grp_excl
+        )
+        lbl_excl_desc.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        vbox_excl.addWidget(lbl_excl_desc)
+
+        self.list_exclusions = QListWidget(grp_excl)
+        self.list_exclusions.setFixedHeight(120)
+        vbox_excl.addWidget(self.list_exclusions)
+
+        excl_btn_row = QHBoxLayout()
+        self.edit_new_excl = QLineEdit(grp_excl)
+        self.edit_new_excl.setPlaceholderText("Directory name or relative path to exclude...")
+        excl_btn_row.addWidget(self.edit_new_excl, 1)
+
+        btn_add_excl = QPushButton("➕ Add Exclusion", grp_excl)
+        btn_add_excl.clicked.connect(self._on_add_exclusion)
+        excl_btn_row.addWidget(btn_add_excl)
+
+        btn_rem_excl = QPushButton("➖ Remove Selected", grp_excl)
+        btn_rem_excl.clicked.connect(self._on_remove_exclusion)
+        excl_btn_row.addWidget(btn_rem_excl)
+
+        btn_reset_excl = QPushButton("↺ Reset to Defaults", grp_excl)
+        btn_reset_excl.clicked.connect(self._on_reset_exclusions)
+        excl_btn_row.addWidget(btn_reset_excl)
+
+        vbox_excl.addLayout(excl_btn_row)
+        layout.addWidget(grp_excl)
+
+        # 4. Backup & Rollback Safety Net Card
+        grp_bkp = QGroupBox("Pre-Mutation Backup & Rollback Safety Net", container)
+        vbox_bkp = QVBoxLayout(grp_bkp)
+        vbox_bkp.setSpacing(10)
+
+        retention_row = QHBoxLayout()
+        lbl_ret = QLabel("Backup Retention Window (Days):", grp_bkp)
+        lbl_ret.setStyleSheet("font-weight: 600; color: #e2e8f0;")
+        retention_row.addWidget(lbl_ret)
+
+        self.spin_retention = QSpinBox(grp_bkp)
+        self.spin_retention.setRange(1, 365)
+        self.spin_retention.setValue(int(config_manager.get("watermark_backup_retention_days", 30)))
+        retention_row.addWidget(self.spin_retention)
+        retention_row.addStretch()
+        vbox_bkp.addLayout(retention_row)
+
+        lbl_ret_note = QLabel(
+            "A byte-for-byte pre-mutation backup is always created before mutating any file. "
+            "Backups older than this retention period can be pruned.",
+            grp_bkp
+        )
+        lbl_ret_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        vbox_bkp.addWidget(lbl_ret_note)
+
+        bkp_action_row = QHBoxLayout()
+        btn_open_bkp = QPushButton("📂 Open Backup Store in Explorer", grp_bkp)
+        btn_open_bkp.clicked.connect(lambda: reveal_in_explorer(str(get_watermark_backup_dir())))
+        bkp_action_row.addWidget(btn_open_bkp)
+
+        btn_prune = QPushButton("🗑️ Prune Expired Backups Now", grp_bkp)
+        btn_prune.clicked.connect(self._on_prune_backups_now)
+        bkp_action_row.addWidget(btn_prune)
+        bkp_action_row.addStretch()
+        vbox_bkp.addLayout(bkp_action_row)
+
+        layout.addWidget(grp_bkp)
+
+        # Bottom Action Row
+        btn_row = QHBoxLayout()
+        btn_save_wm = QPushButton("Save Watermarking Settings", container)
+        btn_save_wm.setObjectName("primaryButton")
+        btn_save_wm.setFixedHeight(34)
+        btn_save_wm.clicked.connect(self._on_save_watermarking_settings)
+        btn_row.addWidget(btn_save_wm)
+
+        btn_reset_wm = QPushButton("Reset Watermarking to Defaults", container)
+        btn_reset_wm.setFixedHeight(34)
+        btn_reset_wm.clicked.connect(self._on_reset_watermarking_settings)
+        btn_row.addWidget(btn_reset_wm)
+        btn_row.addStretch()
+
+        layout.addLayout(btn_row)
+        layout.addStretch()
+
+        scroll.setWidget(container)
+        return scroll
+
+    def _on_approval_mode_changed(self, index: int) -> None:
+        mode = self.combo_approval_mode.currentData()
+        self.lbl_auto_notice.setVisible(mode == "auto")
+
+    def _on_add_exclusion(self) -> None:
+        text = self.edit_new_excl.text().strip()
+        if text:
+            existing = [self.list_exclusions.item(i).text() for i in range(self.list_exclusions.count())]
+            if text not in existing:
+                self.list_exclusions.addItem(text)
+            self.edit_new_excl.clear()
+
+    def _on_remove_exclusion(self) -> None:
+        row = self.list_exclusions.currentRow()
+        if row >= 0:
+            self.list_exclusions.takeItem(row)
+
+    def _on_reset_exclusions(self) -> None:
+        self.list_exclusions.clear()
+        for excl in DEFAULT_SYSTEM_EXCLUSIONS:
+            self.list_exclusions.addItem(excl)
+
+    def _on_prune_backups_now(self) -> None:
+        days = self.spin_retention.value()
+        count = prune_watermark_backups(retention_days=days)
+        QMessageBox.information(
+            self,
+            "Backup Pruning Complete",
+            f"Pruning completed.\n\nRemoved {count} expired backup directories older than {days} days."
+        )
+
+    def _on_save_watermarking_settings(self) -> None:
+        config_manager.set("watermark_enabled", self.chk_watermark_enabled.isChecked())
+        config_manager.set("watermark_approval_mode", self.combo_approval_mode.currentData())
+        config_manager.set("watermark_min_tier", self.combo_min_tier.currentData())
+        config_manager.set("watermark_template", self.edit_template.text().strip())
+        config_manager.set("watermark_backup_retention_days", self.spin_retention.value())
+
+        excl_list = [self.list_exclusions.item(i).text() for i in range(self.list_exclusions.count())]
+        config_manager.set("system_scan_exclusions", excl_list)
+
+        config_manager.save()
+        QMessageBox.information(self, "Settings Saved", "Watermarking and safety net settings saved successfully.")
+
+    def _on_reset_watermarking_settings(self) -> None:
+        self.chk_watermark_enabled.setChecked(True)
+        idx_app = self.combo_approval_mode.findData("manual")
+        if idx_app >= 0:
+            self.combo_approval_mode.setCurrentIndex(idx_app)
+        idx_tier = self.combo_min_tier.findData("Confidential")
+        if idx_tier >= 0:
+            self.combo_min_tier.setCurrentIndex(idx_tier)
+        self.edit_template.setText("CONFIDENTIAL — Classified by PII Sentinel — {tier} — {date} — Do Not Distribute")
+        self.spin_retention.setValue(30)
+        self.list_exclusions.clear()
+        for excl in DEFAULT_SYSTEM_EXCLUSIONS:
+            self.list_exclusions.addItem(excl)
+
     def _check_office_addin_reg(self, app_name: str) -> bool:
         """Check if PIISentinel.OfficeAddin is registered under HKCU."""
         try:
@@ -602,6 +840,30 @@ class SettingsView(QWidget):
 
         theme_curr = config_manager.theme.capitalize()
         self.combo_theme.setCurrentText(theme_curr if theme_curr in ["Dark", "Light"] else "Dark")
+
+        # Watermarking settings
+        if hasattr(self, "chk_watermark_enabled"):
+            self.chk_watermark_enabled.setChecked(config_manager.get("watermark_enabled", True))
+            app_mode = config_manager.get("watermark_approval_mode", "manual")
+            idx_app = self.combo_approval_mode.findData(app_mode)
+            if idx_app >= 0:
+                self.combo_approval_mode.setCurrentIndex(idx_app)
+            self.lbl_auto_notice.setVisible(app_mode == "auto")
+
+            min_tier = config_manager.get("watermark_min_tier", "Confidential")
+            idx_tier = self.combo_min_tier.findData(min_tier)
+            if idx_tier >= 0:
+                self.combo_min_tier.setCurrentIndex(idx_tier)
+
+            self.edit_template.setText(config_manager.get(
+                "watermark_template",
+                "CONFIDENTIAL — Classified by PII Sentinel — {tier} — {date} — Do Not Distribute"
+            ))
+            self.spin_retention.setValue(int(config_manager.get("watermark_backup_retention_days", 30)))
+
+            self.list_exclusions.clear()
+            for excl in config_manager.get("system_scan_exclusions", []):
+                self.list_exclusions.addItem(excl)
 
     def save_settings(self) -> None:
         """Write user selections to config_manager."""
@@ -722,14 +984,19 @@ class SettingsView(QWidget):
             self._push_policy_live()
 
     def _push_policy_live(self) -> None:
-        """Push policy updates (including realtime_selected_entities) to running background microservice immediately."""
+        """Push policy updates (including realtime_selected_entities and watched_folders) to running background microservice immediately."""
         port = policy_manager.api_port
         url = f"http://127.0.0.1:{port}/policy"
         try:
             payload = json.dumps({
                 "realtime_selected_entities": config_manager.realtime_selected_entities,
                 "tier_actions": policy_manager.tier_actions,
-                "fail_open": policy_manager.fail_open
+                "fail_open": policy_manager.fail_open,
+                "watched_folders": policy_manager.watched_folders,
+                "quarantine_archive_path": policy_manager.quarantine_archive_path,
+                "enforce_office": policy_manager.enforce_office,
+                "enforce_watcher": policy_manager.enforce_watcher,
+                "toast_notifications": policy_manager.toast_notifications
             }).encode("utf-8")
             req = urllib.request.Request(
                 url,
@@ -737,7 +1004,7 @@ class SettingsView(QWidget):
                 headers={"Content-Type": "application/json", "User-Agent": "PIISentinel-UI"},
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
                 pass
         except Exception:
             pass

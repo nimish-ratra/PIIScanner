@@ -127,13 +127,11 @@ class EnforcementPolicyManager:
 
     @property
     def watched_folders(self) -> List[str]:
-        folders = self._policy.get("watched_folders") or []
-        valid = [f for f in folders if Path(f).exists() and Path(f).is_dir()]
-        if not valid:
-            valid = get_default_watched_folders()
-            self._policy["watched_folders"] = valid
+        if "watched_folders" not in self._policy:
+            self._policy["watched_folders"] = get_default_watched_folders()
             self.save()
-        return valid
+        folders = self._policy.get("watched_folders", [])
+        return [f for f in folders if Path(f).exists() and Path(f).is_dir()]
 
     @watched_folders.setter
     def watched_folders(self, val: List[str]) -> None:

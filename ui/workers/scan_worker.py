@@ -4,13 +4,13 @@ Wraps backend.scanner.Scanner in a QThread and exposes Qt signals for UI updates
 Ensures zero GUI freezing during heavy document extraction and NLP analysis.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Union
 from PySide6.QtCore import QThread, Signal
 from backend.scanner import Scanner
 
 
 class ScanWorker(QThread):
-    """Worker thread running directory scan and emitting thread-safe Qt signals."""
+    """Worker thread running directory or full drive scan and emitting thread-safe Qt signals."""
 
     # Signals
     progress_updated = Signal(int, int, str, float)  # (scanned, total, current_file, elapsed)
@@ -21,13 +21,15 @@ class ScanWorker(QThread):
 
     def __init__(
         self,
-        target_folder: str,
+        target_folder: Union[str, List[str]],
         confidence_threshold: float = 0.6,
         selected_entities: Optional[List[str]] = None,
         supported_extensions: Optional[List[str]] = None,
         max_file_size_mb: int = 50,
         max_workers: int = 2,
         ocr_enabled: bool = False,
+        scan_source: str = "directory_scan",
+        exclusion_patterns: Optional[List[str]] = None,
         parent=None
     ):
         super().__init__(parent)
@@ -38,6 +40,8 @@ class ScanWorker(QThread):
         self.max_file_size_mb = max_file_size_mb
         self.max_workers = max_workers
         self.ocr_enabled = ocr_enabled
+        self.scan_source = scan_source
+        self.exclusion_patterns = exclusion_patterns
 
         self.scanner = Scanner(
             target_folder=self.target_folder,
@@ -46,7 +50,9 @@ class ScanWorker(QThread):
             selected_entities=self.selected_entities,
             max_file_size_mb=self.max_file_size_mb,
             max_workers=self.max_workers,
-            ocr_enabled=self.ocr_enabled
+            ocr_enabled=self.ocr_enabled,
+            scan_source=self.scan_source,
+            exclusion_patterns=self.exclusion_patterns
         )
 
         # Wire scanner callbacks to Qt signals

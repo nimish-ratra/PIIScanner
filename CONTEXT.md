@@ -45,7 +45,10 @@ c:\PIISentinalApp\
 │   ├── logger.py             # Rotating file logger to %APPDATA%\PIISentinel\logs\sentinel.log
 │   ├── presidio_detector.py  # Microsoft Presidio wrapper, dynamic entity query, masking previews
 │   ├── reporter.py           # Auto-generates report.csv, report.json, and interactive report.html
-│   ├── scanner.py            # Concurrent directory walker (ThreadPoolExecutor) with pause/cancel
+│   ├── scanner.py            # Concurrent directory & drive walker (ThreadPoolExecutor) with pause/cancel
+│   ├── drive_scanner.py      # Fixed physical drive enumeration, noise directory exclusion filters
+│   ├── watermark_engine.py   # Format-aware visual & NTFS ADS watermarking, idempotency engine
+│   ├── watermark_backup.py   # Byte-for-byte pre-mutation backup, rollback/restore, retention pruner
 │   └── tika_extractor.py     # Apache Tika parser, JVM environment auto-config, OCR fallback
 ├── ui/
 │   ├── components/
@@ -337,8 +340,7 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 
 ### 8.3 Enforcement Policy Mapping (`service/enforcement_policy.py`)
 
-- **Configuration Path:** `%APPDATA%\PIISentinel\enforcement_policy.json`.
-- **Monitored Folders Auto-Fallback:** `watched_folders` automatically validates paths and falls back to user directories (`Desktop`, `Documents`, `Downloads`) if previously saved paths are deleted or invalid.
+- **Monitored Folders Configuration & Hot Reload:** `watched_folders` persists the user-defined list of directories monitored for file saves. Defaults (`Desktop`, `Documents`, `Downloads`) are initialized on first launch without reverting user removals. When folders are modified in Settings, `SettingsView._push_policy_live()` pushes the updated list to `POST /policy`, which hot-reloads the Watchdog observer (`ServiceRunner.reload_watcher()`). Additionally, `WatcherHandler` enforces strict path containment checks (`_is_in_watched_folders`), immediately dropping filesystem events from removed or unmonitored directories before debounce or inspection.
 - **Default Tier Actions:**
   - 🟣 `Restricted` -> `block`
   - 🔴 `Highly Confidential` -> `block`
@@ -410,14 +412,51 @@ Phase 2 adds proactive real-time protection alongside Phase 1's batch directory 
 
 ### 8.6 Testing Suite
 
-- `tests/test_backend.py`: Core scanner, recognizers, database, classification, and redaction tests.
+- `tests/test_backend.py` (15 tests): Core scanner, recognizers, database, classification, and redaction tests.
 - `tests/test_enforcement_service.py` (12 tests): Validates policy mapping, resolve_action dual path, FastAPI endpoints (`/health`, `/classify/text`, `/classify/file`, `/enforcement/log`, `/policy`, `/service/stop`), ServiceController methods, and loopback security rejection (403).
-- `tests/test_file_watcher.py` (4 tests): Validates quarantine bridge encryption, plaintext file deletion, SQLite event logging, debouncing ignore rules, and benign file preservation.
+- `tests/test_file_watcher.py` (5 tests): Validates quarantine bridge encryption, plaintext file deletion, SQLite event logging, debouncing ignore rules, unwatched directory exclusion, and benign file preservation.
 - `tests/test_interception_log.py` (4 tests): Validates enforcement schema, multi-filters, CSV export, and UI helper badges.
 - `tests/test_realtime_entities.py` (4 tests): Validates decoupled 36-entity real-time configuration and policy push.
 - `tests/test_ui.py` (7 tests): Validates MainWindow, tab navigation, results filtering, dialogs, and settings persistence.
-- Run complete test suite (41 tests passing):
+- `tests/test_drive_scanner.py` (5 tests): Validates fixed physical drive discovery, optical/network partition exclusions, and noise/system path filtering.
+- `tests/test_watermark_backup.py` (4 tests): Validates byte-for-byte pre-mutation backup, undo rollback, modification collision guard, and retention pruner.
+- `tests/test_watermark_engine.py` (5 tests): Validates format-specific watermarking across DOCX, XLSX, PPTX, PDF, images, and non-destructive NTFS ADS metadata tagging.
+- `tests/test_watermark_workflow.py` (3 tests): Validates end-to-end watermark review dialog, tier batch selection, filtering, and database registry updates.
+- Run complete test suite (64 tests passing):
   ```powershell
   python -m unittest discover tests
   ```
+
+---
+
+## 9. Phase 3A: DSPM Full-Drive Scanning & Data Protection Layer
+
+### 9.1 Multi-Drive / Full-System Scanning (`backend/drive_scanner.py`)
+- **Fixed Physical Drive Enumeration:** Uses `psutil.disk_partitions(all=False)` filtered by `opts` containing `"fixed"` with fallback to `win32file.GetDriveType(mountpoint) == win32file.DRIVE_FIXED`. Strictly filters out removable media (USB sticks, SD cards), optical drives (CD/DVD), and network shares (SMB).
+- **Default Noise/System Exclusion Rules:** Skips OS and high-noise developer directories: `Windows`, `Program Files`, `Program Files (x86)`, `$Recycle.Bin`, `ProgramData`, `AppData\Local\Temp`, `node_modules`, `.git`.
+- **Fast Tree Pruning:** In `backend/scanner.py`, `_count_eligible_files` mutates `dirnames[:]` in-place during `os.walk`, pruning excluded subtrees immediately without recursive traversal overhead. Configurable from user preferences (`system_scan_exclusions`).
+
+### 9.2 Format-Aware Watermarking Engine (`backend/watermark_engine.py`)
+- **Polymorphic Strategy Architecture:** Implements `WatermarkStrategy` abstract base with concrete strategy classes:
+  - `DocxWatermarkStrategy`: Inserts formatted footer classification text and diagonal WordArt VML shape (`w:pict`) into the header XML using `python-docx`.
+  - `XlsxWatermarkStrategy`: Sets centered top header and bottom footer classification banners across all worksheets using `openpyxl`.
+  - `PptxWatermarkStrategy`: Adds diagonal watermark text boxes to slide masters and slides using `python-pptx`.
+  - `PdfWatermarkStrategy`: Generates an in-memory transparent diagonal overlay page via `reportlab` and overlays onto each page via `pypdf.PageObject.merge_page`.
+  - `ImageWatermarkStrategy`: Composites rotated semi-transparent alpha text overlays over image files using `Pillow`.
+  - `PlaintextAdsWatermarkStrategy`: Leaves plaintext/structured files (`.csv`, `.txt`, `.json`, `.xml`, etc.) completely untouched to avoid breaking parsers; writes metadata to NTFS Alternate Data Stream (`<path>:pii-sentinel-classification`) and Windows shell property store (`System.Comment`).
+- **Idempotency via SHA-256:** Queries `file_watermarks` registry; if file has `watermark_status == 'applied'` with identical SHA-256 content hash, skips to prevent stacking duplicate watermarks.
+- **Configurable Watermark Template:** Customizable template supporting `{tier}`, `{date}`, `{time}`, `{filename}` placeholders.
+
+### 9.3 Pre-Mutation Backup & Rollback Safety Net (`backend/watermark_backup.py`)
+- **Byte-for-Byte Pre-Mutation Backups:** Copies original file to `%APPDATA%\PIISentinel\watermark_backups\<content_hash>\<filename>` before any file mutation occurs.
+- **Rollback / Undo Action:** Restores original file byte-for-byte from backup store.
+- **Modification Collision Guard:** Detects whether the file was altered by the user after watermarking; warns and aborts rather than overwriting unsaved user edits.
+- **Automated Retention Pruning:** Configurable retention window (default: 30 days); prunes expired backup directories from disk and logs results.
+
+### 9.4 Classification Registry & Schema Extensions (`backend/database.py`)
+- **Scans Table Migration:** Added `scan_source TEXT DEFAULT 'directory_scan'` (supports `'directory_scan'` and `'full_system_scan'`).
+- **Findings Table Migration:** Added `watermark_status`, `watermark_method`, `watermark_applied_at`, `watermark_backup_path`, `content_hash_sha256`.
+- **File Watermarks Table (`file_watermarks`):** High-performance registry table with indexes on `file_path`, `content_hash_sha256`, and `watermark_status` for fast idempotency lookups, candidate batching, and cross-scan rollback tracking.
+
+
 

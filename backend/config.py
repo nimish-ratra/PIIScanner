@@ -29,7 +29,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "theme": "dark",
     "first_run_complete": False,
     "java_path": "",
-    "tesseract_path": ""
+    "tesseract_path": "",
+    # Phase 3A: Full System Scan & Watermarking Settings
+    "system_scan_exclusions": [
+        "Windows",
+        "Program Files",
+        "Program Files (x86)",
+        "$Recycle.Bin",
+        "ProgramData",
+        r"AppData\Local\Temp",
+        "node_modules",
+        ".git"
+    ],
+    "watermark_enabled": True,
+    "watermark_template": "CONFIDENTIAL — Classified by PII Sentinel — {tier} — {date} — Do Not Distribute",
+    "watermark_min_tier": "Confidential",
+    "watermark_approval_mode": "manual",  # 'manual' | 'auto' (scaffold)
+    "watermark_backup_retention_days": 30,
+    "watermark_backup_dir": ""
 }
 
 
@@ -65,6 +82,17 @@ def get_reports_dir() -> Path:
 def get_db_path() -> Path:
     """Return the path to the history SQLite database."""
     return get_app_dir() / "history.db"
+
+
+def get_watermark_backup_dir() -> Path:
+    """Return the local backup store directory for pre-mutation file backups."""
+    custom = os.getenv("PII_SENTINEL_BACKUP_DIR", "")
+    if custom:
+        backup_dir = Path(custom)
+    else:
+        backup_dir = get_app_dir() / "watermark_backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    return backup_dir
 
 
 class ConfigManager:
