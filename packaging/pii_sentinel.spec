@@ -58,6 +58,22 @@ hiddenimports = [
     "win32com",
     "win32com.propsys",
     "win32crypt",
+    "uvicorn",
+    "fastapi",
+    "starlette",
+    "watchdog",
+    "pystray",
+    "pystray._win32",
+    "win10toast",
+    "service",
+    "service.service_runner",
+    "service.api_server",
+    "service.enforcement_policy",
+    "service.service_controller",
+    "file_watcher",
+    "file_watcher.watcher_service",
+    "file_watcher.quarantine_bridge",
+    "file_watcher.toast_notifier",
 ]
 hiddenimports += collect_submodules("presidio_analyzer")
 hiddenimports += collect_submodules("spacy")
@@ -70,6 +86,13 @@ hiddenimports += collect_submodules("pptx")
 hiddenimports += collect_submodules("pypdf")
 hiddenimports += collect_submodules("reportlab")
 hiddenimports += collect_submodules("psutil")
+hiddenimports += collect_submodules("uvicorn")
+hiddenimports += collect_submodules("fastapi")
+hiddenimports += collect_submodules("starlette")
+hiddenimports += collect_submodules("watchdog")
+hiddenimports += collect_submodules("pystray")
+hiddenimports += collect_submodules("service")
+hiddenimports += collect_submodules("file_watcher")
 
 icon_file = os.path.join(project_root, "packaging", "assets", "app_icon.ico")
 

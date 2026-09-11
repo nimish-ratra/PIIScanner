@@ -113,9 +113,14 @@ class ServiceController:
         if sys.platform == "win32":
             flags = subprocess.CREATE_NO_WINDOW
 
+        if getattr(sys, "frozen", False):
+            launch_args = [python_exe, "--service"]
+        else:
+            launch_args = [python_exe, "-m", "service.service_runner"]
+
         try:
             cls._process = subprocess.Popen(
-                [python_exe, "-m", "service.service_runner"],
+                launch_args,
                 cwd=str(project_root),
                 env=env,
                 creationflags=flags,

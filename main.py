@@ -45,6 +45,28 @@ def exception_hook(exc_type, exc_value, exc_traceback):
 
 
 def main():
+    # Handle background service invocation (e.g. when spawned from compiled PyInstaller binary)
+    if "--service" in sys.argv or "-m" in sys.argv or any("service_runner" in a for a in sys.argv):
+        from service.service_runner import main as service_main
+        # Strip dispatching args so service_runner's argparse sees only its own flags
+        clean_argv = [sys.argv[0]]
+        skip = False
+        for arg in sys.argv[1:]:
+            if skip:
+                skip = False
+                continue
+            if arg == "--service":
+                continue
+            if arg == "-m":
+                skip = True
+                continue
+            if "service_runner" in arg:
+                continue
+            clean_argv.append(arg)
+        sys.argv = clean_argv
+        service_main()
+        return
+
     # Ensure Java is discoverable by Apache Tika
     configure_java_environment()
 

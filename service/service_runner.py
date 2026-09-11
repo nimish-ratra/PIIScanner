@@ -45,9 +45,12 @@ def set_autostart(enable: bool) -> bool:
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
             if enable:
-                python_exe = sys.executable
-                script_path = str(Path(__file__).resolve())
-                cmd = f'"{python_exe}" "{script_path}" --headless'
+                if getattr(sys, "frozen", False):
+                    cmd = f'"{sys.executable}" --service --headless'
+                else:
+                    python_exe = sys.executable
+                    script_path = str(Path(__file__).resolve())
+                    cmd = f'"{python_exe}" "{script_path}" --headless'
                 winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, cmd)
                 logger.info(f"Registered autostart: {cmd}")
             else:
