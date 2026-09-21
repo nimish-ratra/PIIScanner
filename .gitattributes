@@ -1,0 +1,3 @@
+# Never apply line-ending conversion to PDFs (git can misdetect them as text
+# and corrupt them on Windows checkouts with core.autocrlf=true).
+*.pdf binary

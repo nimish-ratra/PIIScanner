@@ -1,0 +1,45 @@
+CONFIDENTIAL - HR & CUSTOMER DATA EXPORT (SYNTHETIC TEST FILE)
+Generated for PII Sentinel detection testing. All names, numbers, and keys
+below are fabricated and do NOT belong to real people or real accounts.
+================================================================
+
+EMPLOYEE RECORD #1
+Name: Rohit Sharma
+Email: rohit.sharma@examplecorp.in
+Phone: +91 98765 43210
+Date of Birth: 14-08-1990
+Aadhaar Number: 2345 6789 0124
+PAN Card: ABCPK1234L
+Address: Flat 302, Sunrise Apartments, Sector 21, Gurugram, Haryana, India
+
+EMPLOYEE RECORD #2
+Name: Priya Iyer
+Email: priya.iyer@examplecorp.in
+Phone: +91 91234 56789
+Aadhaar Number: 3456 7890 1238
+PAN Card: BXZPI7654Q
+Voter ID (EPIC): ABC1234567
+Indian Passport Number: K1234567
+Bank IFSC Code: HDFC0001234
+GSTIN (Freelance Consulting): 07ABCDE1234F1Z5
+
+CUSTOMER PAYMENT RECORD
+Cardholder: Ankit Verma
+Credit Card Number: 4111 1111 1111 1111
+Billing Email: ankit.verma@customerdomain.com
+Support Phone: 022-2345-6789
+Linked IP Address (last login): 103.25.231.14
+
+--------------------------------------------------------------
+INTERNAL DEV NOTES - DO NOT COMMIT (Developer Secrets Test Section)
+--------------------------------------------------------------
+AWS Access Key: AKIAIOSFODNN7EXAMPLE
+GitHub Personal Access Token: ghp_EXAMPLETOKEN000000000000000000000000
+OpenAI API Key: sk-proj-EXAMPLEKEY000000000000000000000000000000000
+Google Cloud API Key: AIzaSyEXAMPLE00000000000000000000000000
+Slack Bot Token: xoxb-EXAMPLE-TOKEN-000000000000-000000000000
+JWT Session Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.dummy_signature
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpQIBAAKCAQEA1234567890fakekeymaterialfortestingonly0987654321
+FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE
+-----END RSA PRIVATE KEY-----

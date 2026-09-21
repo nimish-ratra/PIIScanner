@@ -74,3 +74,10 @@ Desktop.ini
 *.user
 *.suo
 
+# Cloud Extender: local deploy config and scratch test output
+# (samconfig.toml holds the real AWS account ID; copy samconfig.toml.example)
+cloud-extender/aws/samconfig.toml
+cloud-extender/aws/response.json
+cloud-extender/aws/result.json
+cloud_scan_results.csv
+
