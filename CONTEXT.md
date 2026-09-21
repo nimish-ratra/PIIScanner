@@ -39,71 +39,76 @@
 
 ```
 c:\PIISentinalApp\
-├── backend/
-│   ├── classifier.py         # Microsoft Purview 5-tier sensitivity classification engine & rules
-│   ├── config.py             # User preferences & settings (%APPDATA%\PIISentinel\config.json)
-│   ├── custom_recognizers.py # Native Presidio recognizers for India PII (Verhoeff) & Secrets/Keys
-│   ├── database.py           # SQLite persistence for scan runs (%APPDATA%\PIISentinel\history.db)
-│   ├── drive_scanner.py      # Fixed physical drive enumeration, noise directory exclusion filters
-│   ├── file_ops.py           # Path-preserving file copy/move extraction and pyzipper encrypted zip
-│   ├── license_client.py     # TrustFabric licensing client — register/heartbeat/policy/release (Phase 4, see §10)
-│   ├── logger.py             # Rotating file logger to %APPDATA%\PIISentinel\logs\sentinel.log
-│   ├── presidio_detector.py  # Microsoft Presidio wrapper, dynamic entity query, masking previews
-│   ├── reporter.py           # Auto-generates report.csv, report.json, and interactive report.html
-│   ├── scanner.py            # Concurrent directory & drive walker (ThreadPoolExecutor) with pause/cancel
-│   ├── tika_extractor.py     # Apache Tika parser, JVM environment auto-config, OCR fallback
-│   ├── watermark_backup.py   # Byte-for-byte pre-mutation backup, rollback/restore, retention pruner
-│   └── watermark_engine.py   # Format-aware visual & NTFS ADS watermarking, idempotency engine
-├── service/
-│   ├── api_server.py         # FastAPI local microservice on loopback 127.0.0.1:47821
-│   ├── enforcement_policy.py # Dynamic tier action mapper (Office block vs Watcher quarantine)
-│   ├── service_controller.py # Windows process controller (start/stop/health checks)
-│   └── service_runner.py     # Windows background runner with system tray icon & autostart
-├── ui/
-│   ├── components/
-│   │   ├── card.py           # Card/CardHeader/CardTitle/CardDescription-style container (Phase 6, see §12)
-│   │   ├── icon_label.py     # Icon + text compound label
-│   │   ├── log_viewer.py     # Real-time console widget with color-coded log levels
-│   │   ├── metric_column.py  # KPI metric column display
-│   │   ├── pii_selector_dialog.py # Dedicated lag-free modal dialogs (PiiSelector, PiiViewer, FileViewer)
-│   │   ├── stat_card.py      # Metric KPI card widget with gradient border & value styling
-│   │   └── status_badge.py   # Semantic status badges
-│   ├── views/
-│   │   ├── activation_dialog.py # Enrollment token + name + email form; redeems against TrustFabric (Phase 4, see §10)
-│   │   ├── history_view.py   # Historical scan audit trail, past findings reloader, delete action
-│   │   ├── license_gate_window.py # "License required / pending approval / standalone mode" window (Phase 4, see §10)
-│   │   ├── live_monitoring_view.py # Real-time file system & clipboard DLP monitoring
-│   │   ├── onboarding_dialog.py # Privacy guarantee & air-gapped confirmation modal
-│   │   ├── results_view.py   # Sortable findings table, unmask toggle, row inspector, extraction/quarantine
-│   │   ├── scan_view.py      # Target folder, lag-free PII configuration buttons, worker slider, KPIs
-│   │   ├── settings_view.py  # Preferences, extensions list, max size, worker count, Java status
-│   │   └── watermark_review_dialog.py # Batch watermark review, selection, and undo dialog
-│   ├── main_window.py        # MainWindow coordinating 5-tab sidebar navigation (Scan, Results, History, Live, Settings)
-│   ├── icons.py              # Bundled Lucide SVG icons (packaging/assets/icons/) renderer at runtime (Phase 6, see §12)
-│   ├── theme.py              # Single fixed QSS design system (buttons, inputs, tables, cards, sidebar)
-│   └── workers/
-│       └── scan_worker.py    # QThread worker bridge connecting backend Scanner to Qt UI signals
-├── packaging/
-│   ├── assets/               # app_icon.ico, claissify_icon.png, and Lucide SVG icons
-│   ├── build.py              # Automated 2-step build pipeline (PyInstaller -> Inno Setup ISCC)
-│   ├── create_assets.py      # Programmatic generator for modern app icons
-│   ├── installer.iss         # Inno Setup compilation script for single-file installer
-│   └── pii_sentinel.spec     # PyInstaller spec configuring data bundles, hidden imports & icons
-├── tests/
-│   ├── create_test_samples.py # Generates clean & sensitive synthetic test files (.txt, .csv, .json, .docx)
-│   ├── test_backend.py       # Comprehensive unit test suite for backend modules
-│   ├── test_data/            # Synthetic sample documents for testing
-│   ├── test_license_client.py # 29-test suite for the TrustFabric licensing client (Phase 4, see §10)
-│   ├── test_ui.py            # Automated UI test suite with live scanner execution
-│   └── verify_activation_manual.py # Standalone script showing only ActivationDialog for manual testing
+├── agent/                    # Complete desktop application codebase
+│   ├── backend/
+│   │   ├── classifier.py         # Microsoft Purview 5-tier sensitivity classification engine & rules
+│   │   ├── config.py             # User preferences & settings (%APPDATA%\PIISentinel\config.json)
+│   │   ├── custom_recognizers.py # Native Presidio recognizers for India PII (Verhoeff) & Secrets/Keys
+│   │   ├── database.py           # SQLite persistence for scan runs (%APPDATA%\PIISentinel\history.db)
+│   │   ├── drive_scanner.py      # Fixed physical drive enumeration, noise directory exclusion filters
+│   │   ├── file_ops.py           # Path-preserving file copy/move extraction and pyzipper encrypted zip
+│   │   ├── license_client.py     # TrustFabric licensing client — register/heartbeat/policy/release (Phase 4, see §10)
+│   │   ├── logger.py             # Rotating file logger to %APPDATA%\PIISentinel\logs\sentinel.log
+│   │   ├── presidio_detector.py  # Microsoft Presidio wrapper, dynamic entity query, masking previews
+│   │   ├── reporter.py           # Auto-generates report.csv, report.json, and interactive report.html
+│   │   ├── scanner.py            # Concurrent directory & drive walker (ThreadPoolExecutor) with pause/cancel
+│   │   ├── tika_extractor.py     # Apache Tika parser, JVM environment auto-config, OCR fallback
+│   │   ├── watermark_backup.py   # Byte-for-byte pre-mutation backup, rollback/restore, retention pruner
+│   │   └── watermark_engine.py   # Format-aware visual & NTFS ADS watermarking, idempotency engine
+│   ├── service/
+│   │   ├── api_server.py         # FastAPI local microservice on loopback 127.0.0.1:47821
+│   │   ├── enforcement_policy.py # Dynamic tier action mapper (Office block vs Watcher quarantine)
+│   │   ├── service_controller.py # Windows process controller (start/stop/health checks)
+│   │   └── service_runner.py     # Windows background runner with system tray icon & autostart
+│   ├── ui/
+│   │   ├── components/
+│   │   │   ├── card.py           # Card/CardHeader/CardTitle/CardDescription-style container (Phase 6, see §12)
+│   │   │   ├── icon_label.py     # Icon + text compound label
+│   │   │   ├── log_viewer.py     # Real-time console widget with color-coded log levels
+│   │   │   ├── metric_column.py  # KPI metric column display
+│   │   │   ├── pii_selector_dialog.py # Dedicated lag-free modal dialogs (PiiSelector, PiiViewer, FileViewer)
+│   │   │   ├── stat_card.py      # Metric KPI card widget with gradient border & value styling
+│   │   │   └── status_badge.py   # Semantic status badges
+│   │   ├── views/
+│   │   │   ├── activation_dialog.py # Enrollment token + name + email form; redeems against TrustFabric (Phase 4, see §10)
+│   │   │   ├── history_view.py   # Historical scan audit trail, past findings reloader, delete action
+│   │   │   ├── license_gate_window.py # "License required / pending approval / standalone mode" window (Phase 4, see §10)
+│   │   │   ├── live_monitoring_view.py # Real-time file system & clipboard DLP monitoring
+│   │   │   ├── onboarding_dialog.py # Privacy guarantee & air-gapped confirmation modal
+│   │   │   ├── results_view.py   # Sortable findings table, unmask toggle, row inspector, extraction/quarantine
+│   │   │   ├── scan_view.py      # Target folder, lag-free PII configuration buttons, worker slider, KPIs
+│   │   │   ├── settings_view.py  # Preferences, extensions list, max size, worker count, Java status
+│   │   │   └── watermark_review_dialog.py # Batch watermark review, selection, and undo dialog
+│   │   ├── main_window.py        # MainWindow coordinating 5-tab sidebar navigation (Scan, Results, History, Live, Settings)
+│   │   ├── icons.py              # Bundled Lucide SVG icons (packaging/assets/icons/) renderer at runtime (Phase 6, see §12)
+│   │   ├── theme.py              # Single fixed QSS design system (buttons, inputs, tables, cards, sidebar)
+│   │   └── workers/
+│   │       └── scan_worker.py    # QThread worker bridge connecting backend Scanner to Qt UI signals
+│   ├── packaging/
+│   │   ├── assets/               # app_icon.ico, claissify_icon.png, and Lucide SVG icons
+│   │   ├── build.py              # Automated 2-step build pipeline (PyInstaller -> Inno Setup ISCC)
+│   │   ├── create_assets.py      # Programmatic generator for modern app icons
+│   │   ├── installer.iss         # Inno Setup compilation script for single-file installer
+│   │   └── pii_sentinel.spec     # PyInstaller spec configuring data bundles, hidden imports & icons
+│   ├── tests/
+│   │   ├── create_test_samples.py # Generates clean & sensitive synthetic test files (.txt, .csv, .json, .docx)
+│   │   ├── test_backend.py       # Comprehensive unit test suite for backend modules
+│   │   ├── test_data/            # Synthetic sample documents for testing
+│   │   ├── test_license_client.py # 29-test suite for the TrustFabric licensing client (Phase 4, see §10)
+│   │   ├── test_ui.py            # Automated UI test suite with live scanner execution
+│   │   └── verify_activation_manual.py # Standalone script showing only ActivationDialog for manual testing
+│   ├── main.py                   # Main desktop application runner
+│   └── requirements.txt          # Python project dependencies
+├── client/                       # Client workspace scaffold
+├── server/                       # Server workspace scaffold
 ├── test_data/
-│   └── india_pii_sample.txt  # Synthetic Indian-context PII test fixture (valid Aadhaar/PAN/GSTIN/IFSC patterns + fake dev secrets)
-├── .gitignore                # Excludes build, dist, caches, logs, databases from git
-├── CONTEXT.md                # Single source of truth handbook for agents & developers
-├── LICENSE                   # MIT License
-├── PRESIDIO_PII_CATALOG.md   # Complete Microsoft Presidio 23-entity specification & detection catalog
-├── README.md                 # Public GitHub repository documentation
-└── requirements.txt          # Python project dependencies
+│   └── india_pii_sample.txt      # Synthetic Indian-context PII test fixture (sanitized patterns)
+├── main.py                       # Root launcher forwarding to agent/main.py
+├── .gitignore                    # Excludes build, dist, caches, logs, databases from git
+├── CONTEXT.md                    # Single source of truth handbook for agents & developers
+├── LICENSE                       # MIT License
+├── PRESIDIO_PII_CATALOG.md       # Complete Microsoft Presidio 23-entity specification & detection catalog
+└── README.md                     # Public GitHub repository documentation
 ```
 
 ---
