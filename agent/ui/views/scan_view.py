@@ -1020,6 +1020,23 @@ class ScanView(QWidget):
             self._update_folder_preview()
 
     def _on_start_scan(self) -> None:
+        standalone = os.environ.get("CLAISSIFY_STANDALONE", "0") == "1"
+        if not standalone:
+            from backend import license_client
+            # Live check so immediate admin revokes block the scan immediately
+            allowed, reason = license_client.refresh_policy(timeout_seconds=2.0)
+            if not allowed:
+                QMessageBox.critical(
+                    self,
+                    "Scanning Blocked",
+                    f"Unable to start scan: {reason}.\nPlease verify your license status in Settings or contact your administrator.",
+                )
+                if hasattr(self, "window") and callable(self.window):
+                    win = self.window()
+                    if hasattr(win, "_handle_license_lost"):
+                        win._handle_license_lost(reason)
+                return
+
         is_full_system = self.radio_full_system.isChecked()
         if is_full_system:
             drives = get_fixed_drives()

@@ -107,15 +107,66 @@ def run_inno_setup() -> bool:
             print(f"Size: {installer_file.stat().st_size / (1024 * 1024):.1f} MB")
             print("=" * 60)
             return True
-    print("[ERROR] Inno Setup compilation failed.")
+def ensure_bundled_jre() -> bool:
+    """Ensure minimal JRE is bundled into the distribution directory for Apache Tika."""
+    dist_jre = DIST_DIR / "PIISentinel" / "jre"
+    packaging_jre = PACKAGING_DIR / "jre"
+
+    if (dist_jre / "bin" / "java.exe").exists():
+        print(f"[OK] Bundled JRE already present in dist: {dist_jre}")
+        return True
+
+    if (packaging_jre / "bin" / "java.exe").exists():
+        print(f"Copying bundled JRE from {packaging_jre} to {dist_jre}...")
+        dist_jre.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(str(packaging_jre), str(dist_jre), dirs_exist_ok=True)
+        print(f"[SUCCESS] Bundled JRE copied to {dist_jre}")
+        return True
+
+    # Generate minimal JRE using jlink if Adoptium JDK is installed
+    jlink_candidates = [
+        Path(r"C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot\bin\jlink.exe"),
+    ]
+    jh = os.environ.get("JAVA_HOME", "")
+    if jh:
+        cleaned = jh.strip().strip('"').strip("'")
+        jlink_candidates.insert(0, Path(cleaned) / "bin" / "jlink.exe")
+        jlink_candidates.insert(0, Path(cleaned).parent / "bin" / "jlink.exe")
+
+    jlink_exe = None
+    for c in jlink_candidates:
+        if c.exists():
+            jlink_exe = c
+            break
+
+    if jlink_exe:
+        print(f"Generating minimal JRE using jlink ({jlink_exe})...")
+        cmd = [
+            str(jlink_exe),
+            "--add-modules", "java.se",
+            "--output", str(dist_jre),
+            "--strip-debug",
+            "--no-man-pages",
+            "--no-header-files"
+        ]
+        res = subprocess.run(cmd)
+        if res.returncode == 0 and (dist_jre / "bin" / "java.exe").exists():
+            print(f"[SUCCESS] Minimal JRE generated at {dist_jre}")
+            return True
+
+    print("[WARNING] Could not bundle JRE automatically.")
     return False
 
 
 def main():
-    success_pyinstaller = run_pyinstaller()
-    if not success_pyinstaller:
-        sys.exit(1)
+    installer_only = "--installer-only" in sys.argv
 
+    if not installer_only:
+        success_pyinstaller = run_pyinstaller()
+        if not success_pyinstaller:
+            sys.exit(1)
+
+    ensure_bundled_jre()
     run_inno_setup()
 
 

@@ -211,6 +211,45 @@ class SettingsView(QWidget):
 
         layout.addWidget(grp_sys)
 
+        # 4. Fleet Reporting Card (Read-Only §8.4)
+        grp_fleet = QGroupBox("Fleet Reporting && Operational Telemetry", container)
+        vbox_fleet = QVBoxLayout(grp_fleet)
+        vbox_fleet.setSpacing(10)
+
+        lbl_fleet_desc = QLabel(
+            "When licensed and enrolled with TrustFabric, this device synchronizes fleet health, "
+            "protection status, and aggregate scan counts with your organization's security administrator.\n\n"
+            "• Permitted outbound data: service health, version, scan durations, counts of findings by tier and entity type, and 15-minute action counts.\n"
+            "• Strictly private (never leaves machine): file contents, PII values (raw or masked), override reasons, entity summaries, or usernames.\n"
+            "• Path privacy: Default is salted cryptographic hashes (sha256:...). Literal paths are transmitted only if your company administrator explicitly enables full path synchronization.",
+            grp_fleet
+        )
+        lbl_fleet_desc.setWordWrap(True)
+        lbl_fleet_desc.setStyleSheet("font-size: 11px; color: #94a3b8; line-height: 1.4;")
+        vbox_fleet.addWidget(lbl_fleet_desc)
+
+        grid_fleet = QGridLayout()
+        grid_fleet.setHorizontalSpacing(20)
+        grid_fleet.setVerticalSpacing(8)
+
+        grid_fleet.addWidget(QLabel("Fleet Reporting Status:", grp_fleet), 0, 0)
+        self.lbl_fleet_card_status = QLabel("Not connected (standalone)", grp_fleet)
+        self.lbl_fleet_card_status.setStyleSheet("font-weight: 700; color: #94a3b8;")
+        grid_fleet.addWidget(self.lbl_fleet_card_status, 0, 1)
+
+        grid_fleet.addWidget(QLabel("File Path Transmission:", grp_fleet), 1, 0)
+        self.lbl_fleet_card_paths = QLabel("Hashed references (sha256:...)", grp_fleet)
+        self.lbl_fleet_card_paths.setStyleSheet("font-weight: 700; color: #38bdf8;")
+        grid_fleet.addWidget(self.lbl_fleet_card_paths, 1, 1)
+
+        grid_fleet.addWidget(QLabel("Last Successful Sync:", grp_fleet), 2, 0)
+        self.lbl_fleet_card_sync = QLabel("Never", grp_fleet)
+        self.lbl_fleet_card_sync.setStyleSheet("color: #cbd5e1;")
+        grid_fleet.addWidget(self.lbl_fleet_card_sync, 2, 1)
+
+        vbox_fleet.addLayout(grid_fleet)
+        layout.addWidget(grp_fleet)
+
         # Footer Buttons
         footer_box = QHBoxLayout()
         self.btn_save = QPushButton("Save General Settings", container)
@@ -882,6 +921,47 @@ class SettingsView(QWidget):
             self.list_exclusions.clear()
             for excl in config_manager.get("system_scan_exclusions", []):
                 self.list_exclusions.addItem(excl)
+
+        self._update_fleet_reporting_card()
+
+    def _update_fleet_reporting_card(self) -> None:
+        """Update read-only fleet reporting card values."""
+        if not hasattr(self, "lbl_fleet_card_status"):
+            return
+        from datetime import datetime, timezone
+        from backend import license_client, telemetry_client
+        if not license_client.is_registered():
+            self.lbl_fleet_card_status.setText("Not connected (standalone)")
+            self.lbl_fleet_card_status.setStyleSheet("font-weight: 700; color: #94a3b8;")
+            self.lbl_fleet_card_paths.setText("Hashed references (sha256:...)")
+            self.lbl_fleet_card_sync.setText("Never")
+            return
+
+        telem_state = telemetry_client._load_telemetry_state()
+        cfg = telem_state.get("telemetry_config", {})
+        if not cfg.get("enabled", True):
+            self.lbl_fleet_card_status.setText("Paused by your administrator")
+            self.lbl_fleet_card_status.setStyleSheet("font-weight: 700; color: #f59e0b;")
+        else:
+            self.lbl_fleet_card_status.setText("Reporting active")
+            self.lbl_fleet_card_status.setStyleSheet("font-weight: 700; color: #34d399;")
+
+        if cfg.get("syncFullPaths", False):
+            self.lbl_fleet_card_paths.setText("Full literal paths (set by your administrator)")
+            self.lbl_fleet_card_paths.setStyleSheet("font-weight: 700; color: #f59e0b;")
+        else:
+            self.lbl_fleet_card_paths.setText("Hashed references (sha256:...)")
+            self.lbl_fleet_card_paths.setStyleSheet("font-weight: 700; color: #38bdf8;")
+
+        last_sync = telem_state.get("last_sync_time")
+        if last_sync:
+            try:
+                dt = datetime.fromisoformat(last_sync)
+                self.lbl_fleet_card_sync.setText(dt.strftime("%Y-%m-%d %H:%M:%S UTC"))
+            except Exception:
+                self.lbl_fleet_card_sync.setText(str(last_sync))
+        else:
+            self.lbl_fleet_card_sync.setText("Awaiting initial sync")
 
     def save_settings(self) -> None:
         """Write user selections to config_manager."""

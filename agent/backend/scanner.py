@@ -7,6 +7,7 @@ Auto-generates reports upon scan completion and persists to SQLite.
 
 import os
 import time
+import uuid
 import logging
 import threading
 import concurrent.futures
@@ -73,6 +74,7 @@ class Scanner:
 
         # State tracking
         self.scan_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.client_scan_id = str(uuid.uuid4())
         self.files_scanned = 0
         self.files_with_pii = 0
         self.findings: List[Dict[str, Any]] = []
@@ -281,6 +283,15 @@ class Scanner:
         self._log_info(f"Confidence threshold: {self.confidence_threshold}")
         self._log_info(f"Concurrent workers: {self.max_workers}")
 
+        # Licensing enforcement pre-check
+        standalone = os.environ.get("CLAISSIFY_STANDALONE", "0") == "1"
+        if not standalone:
+            from backend import license_client
+            allowed, reason = license_client.enforcement_status()
+            if not allowed:
+                self._log_warning(f"Scan aborted: license enforcement check failed ({reason})")
+                raise PermissionError(f"License enforcement blocked scan: {reason}")
+
         # 1. Discover all matching files
         all_files = self._count_eligible_files()
         total_files = len(all_files)
@@ -344,6 +355,7 @@ class Scanner:
 
         scan_meta = {
             "scan_id": self.scan_id,
+            "client_scan_id": self.client_scan_id,
             "target_folder": self.target_folder,
             "scan_source": self.scan_source,
             "started_at": datetime.fromtimestamp(self.start_time).strftime("%Y-%m-%d %H:%M:%S"),
@@ -377,6 +389,13 @@ class Scanner:
             self._log_info("Scan results stored in local history database.")
         except Exception as e:
             self._log_warning(f"Failed to record scan in database: {e}")
+
+        # 5. Enqueue scan summary for fleet telemetry (non-blocking, local outbox only)
+        try:
+            from backend import telemetry_client
+            telemetry_client.enqueue_scan_summary(scan_meta, self.findings)
+        except Exception as e:
+            logger.debug(f"Failed to enqueue telemetry scan summary: {e}")
 
         summary = {
             **scan_meta,

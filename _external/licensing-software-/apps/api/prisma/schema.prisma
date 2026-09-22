@@ -1,0 +1,636 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Enterprise {
+  id        String   @id @default(uuid())
+  name      String
+  // Vendor-managed commercial status — ACTIVE, INACTIVE. Gates new
+  // entitlement issuance; does not (yet) affect Customer Portal login, which
+  // is a separate, larger change not requested alongside this.
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companies       Company[]
+  entitlements    Entitlement[]
+  licenseRequests LicenseRequest[]
+  auditEvents     AuditEvent[]
+  invitations     Invitation[]
+}
+
+model Company {
+  id                  String   @id @default(uuid())
+  enterpriseId        String
+  name                String
+  // Employee-email domains this company will accept when self-declared at
+  // agent registration time (see AgentService.register()'s employeeEmail
+  // validation for plain/legacy enrollment tokens). Empty means no domain
+  // enforcement is configured yet for this company — the check is skipped,
+  // not defaulted to "reject everything," so onboarding a company doesn't
+  // silently break registration until someone configures this.
+  allowedEmailDomains String[] @default([])
+  // Controls whether agents enrolled under this company report fleet telemetry
+  // (ping, scan summaries, enforcement counts). Default true.
+  telemetryEnabled    Boolean  @default(true)
+  // When false (default), file paths in scan summaries are anonymized as
+  // sha256:<salt+path> hashes and scan summaries contain only coarse drive letters.
+  // When true, the company admin has explicitly authorized literal file paths
+  // to be transmitted to the fleet dashboard.
+  syncFullPaths       Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  enterprise                   Enterprise                   @relation(fields: [enterpriseId], references: [id])
+  users                        User[]
+  roles                        Role[]
+  allocations                  LicenseAllocation[]
+  licenseRequests              LicenseRequest[]
+  installations                Installation[]
+  auditEvents                  AuditEvent[]
+  enrollmentTokens             EnrollmentToken[]
+  activations                  Activation[]
+  installationTelemetryStates InstallationTelemetryState[]
+  serviceStatusEvents          ServiceStatusEvent[]
+  scanRuns                     ScanRun[]
+  enforcementWindows           EnforcementWindow[]
+  agentCommands                AgentCommand[]
+
+  @@index([enterpriseId])
+}
+
+model User {
+  id                 String   @id @default(uuid())
+  companyId          String
+  email              String   @unique
+  name               String
+  displayName        String?
+  isActive           Boolean  @default(true)
+  // Argon2id hash of the Trustfabric-managed customer admin password. Null
+  // until a credential is provisioned for this user (e.g. seed/admin-created).
+  // Never persisted as plaintext, never returned by any API response.
+  passwordHash       String?
+  // True when passwordHash is a system-generated temporary password (e.g.
+  // the one shown once when a vendor creates this customer) — forces a
+  // password change on the next login before anything else is usable.
+  // Cleared the moment POST /customer/auth/change-password succeeds.
+  mustChangePassword Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  company            Company            @relation(fields: [companyId], references: [id])
+  // Unused since OIDC/SSO login was removed from the Customer Portal in favor
+  // of password auth — retained (rather than dropped) so no historical
+  // provider-linking data is destroyed by this change. Not exercised by any
+  // active code path.
+  externalIdentities ExternalIdentity[]
+  roleAssignments    RoleAssignment[]
+  // License requests filed FOR this user (LicenseRequest.targetUserId), not
+  // requests they filed themselves (that's tracked only as a plain string
+  // actorId on LicenseRequest.requestedBy, not a relation).
+  targetedRequests   LicenseRequest[]   @relation("LicenseRequestTargetUser")
+  activations        Activation[]
+  issuedAgentCommands AgentCommand[]     @relation("AgentCommandIssuedBy")
+
+  @@index([email])
+}
+
+model ExternalIdentity {
+  id          String   @id @default(uuid())
+  userId      String
+  provider    String // "entra", "okta"
+  externalSub String // stable subject: OID (oid claim) for Entra
+  tenantId    String? // IdP tenant ID (tid claim for Entra)
+  email       String? // informational only — NOT the identity key
+  linkedAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalSub])
+  @@index([userId])
+}
+
+model RoleAssignment {
+  id        String   @id @default(uuid())
+  userId    String
+  roleId    String
+  companyId String? // null = enterprise-level scope
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId, companyId])
+  @@index([userId])
+}
+
+model Invitation {
+  id           String    @id @default(uuid())
+  email        String
+  enterpriseId String
+  companyId    String?
+  roleId       String
+  invitedBy    String // actorId of the user who created the invitation
+  token        String    @unique @default(uuid())
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  enterprise Enterprise @relation(fields: [enterpriseId], references: [id])
+
+  @@index([email])
+  @@index([token])
+}
+
+// A Trustfabric employee/operator identity for the vendor control plane
+// (Trustfabric Admin portal). Deliberately separate from `User` rather than
+// reusing it with a nullable companyId: `User` is tightly coupled to the
+// Company/Enterprise tenancy model (RBAC scoping, tenant guards, etc.) that
+// has no meaning for a vendor operator, and vendor/customer principal
+// isolation is a security boundary elsewhere in this codebase (see
+// PermissionsGuard) that a shared table would blur.
+//
+// passwordHash/isActive were added to support real password login
+// (POST /vendor/auth/login) — previously this model existed but was only
+// ever written by the seed script, never read by any auth code path.
+model VendorUser {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  roles        String[]
+  // Argon2id hash. Null until a credential is provisioned (e.g. by seed).
+  // Never persisted as plaintext, never returned by any API response.
+  passwordHash String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([email])
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  companyId   String
+  name        String
+  permissions String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company         Company          @relation(fields: [companyId], references: [id])
+  roleAssignments RoleAssignment[]
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  // Vendor-managed commercial status — ACTIVE, INACTIVE. An inactive product
+  // cannot be selected for new entitlement issuance.
+  status      String   @default("ACTIVE")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entitlements Entitlement[]
+  editions     Edition[]
+  activations  Activation[]
+}
+
+// Product -> Edition -> Feature is the vendor-managed commercial hierarchy.
+// An Entitlement optionally references one Edition of its Product — optional
+// because a Product can have zero editions (entitlement is then product-level
+// only), and because pre-existing Entitlements predate this hierarchy.
+model Edition {
+  id          String   @id @default(uuid())
+  productId   String
+  name        String
+  description String?
+  status      String   @default("ACTIVE") // ACTIVE, INACTIVE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  product      Product       @relation(fields: [productId], references: [id])
+  features     Feature[]
+  entitlements Entitlement[]
+  activations  Activation[]
+
+  @@index([productId])
+}
+
+model Feature {
+  id          String   @id @default(uuid())
+  editionId   String
+  name        String
+  // Stable identifier the software checks at runtime (e.g. "advanced_reporting").
+  // Unique per edition, not globally — the same key can exist in multiple editions.
+  key         String
+  description String?
+  status      String   @default("ACTIVE") // ACTIVE, INACTIVE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  edition Edition @relation(fields: [editionId], references: [id])
+
+  @@unique([editionId, key])
+  @@index([editionId])
+}
+
+model Entitlement {
+  id                String   @id @default(uuid())
+  enterpriseId      String
+  productId         String
+  editionId         String?
+  // Human-readable commercial reference (e.g. "ENT-ACME-2026-001"). The
+  // database id above remains the real primary key and FK target — this is
+  // purely a display/reference convenience, generated at creation time.
+  reference         String?  @unique
+  quantity          Int
+  allocatedQuantity Int      @default(0) // Cache to enforce SUM(allocations) <= quantity
+  version           Int      @default(1) // For Optimistic Concurrency Control
+  startDate         DateTime
+  endDate           DateTime
+  status            String   @default("ACTIVE") // ACTIVE, SUSPENDED, EXPIRED, REVOKED
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  enterprise  Enterprise          @relation(fields: [enterpriseId], references: [id])
+  product     Product             @relation(fields: [productId], references: [id])
+  edition     Edition?            @relation(fields: [editionId], references: [id])
+  allocations LicenseAllocation[]
+  requests    LicenseRequest[]
+
+  @@index([enterpriseId])
+  @@index([productId])
+  @@index([editionId])
+  @@index([status])
+}
+
+model LicenseAllocation {
+  id               String   @id @default(uuid())
+  companyId        String
+  entitlementId    String
+  quantity         Int
+  consumedQuantity Int      @default(0) // Cache: count of non-REVOKED Installations drawing a seat from this allocation
+  version          Int      @default(1) // OCC guard for concurrent seat consumption/release (mirrors Entitlement.version)
+  status           String   @default("CREATED") // CREATED, ALLOCATED, ACTIVE, SUSPENDED, REVOKED, EXPIRED
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company          Company           @relation(fields: [companyId], references: [id])
+  entitlement      Entitlement       @relation(fields: [entitlementId], references: [id])
+  installations    Installation[]
+  enrollmentTokens EnrollmentToken[]
+  activations      Activation[]
+
+  @@index([companyId])
+  @@index([entitlementId])
+  @@index([status])
+}
+
+model EnrollmentToken {
+  id              String    @id @default(uuid())
+  companyId       String
+  allocationId    String
+  // Set when this token was minted for one specific Activation (the
+  // approval-driven, named-employee flow) rather than the legacy
+  // "any device against this allocation" flow. When set, AgentService.register()
+  // resolves the EXACT Activation from this field — never by guessing which
+  // pending Activation on the allocation "must" be the right one.
+  // Deliberately NOT unique: an Activation can need a fresh bound token more
+  // than once over its lifetime (initial approval, then again each time a
+  // device is replaced via POST /customer/activations/:id/reactivate-enrollment)
+  // — each such token is single-use (maxActivations: 1) but several may
+  // exist against the same Activation across its history.
+  activationId    String?
+  label           String?
+  tokenHash       String    @unique // sha256 of the plaintext token. Plaintext is returned once at creation and never persisted.
+  maxActivations  Int       @default(1)
+  activationsUsed Int       @default(0)
+  createdBy       String // actorId of the User who issued it
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+
+  company       Company           @relation(fields: [companyId], references: [id])
+  allocation    LicenseAllocation @relation(fields: [allocationId], references: [id])
+  activation    Activation?       @relation(fields: [activationId], references: [id])
+  installations Installation[]
+
+  @@index([companyId])
+  @@index([allocationId])
+  @@index([activationId])
+}
+
+model LicenseRequest {
+  id            String    @id @default(uuid())
+  enterpriseId  String
+  companyId     String
+  entitlementId String
+  requestedBy   String // User ID of whoever FILED this request — not necessarily who receives the license.
+  // The employee this license is actually FOR, if this request is for one
+  // named individual (as opposed to a company stocking up on capacity).
+  // Deliberately separate from requestedBy: an admin filing a request on an
+  // employee's behalf must not be silently treated as the license recipient.
+  // Only requests with quantity === 1 may set this (enforced in the
+  // controller/service) — on approval, exactly one Activation is created for
+  // targetUserId. A request with targetUserId left null is pure
+  // capacity/allocation provisioning, same as this model's original
+  // behavior, and never produces an Activation.
+  targetUserId  String?
+  quantity      Int
+  reason        String?
+  status        String    @default("PENDING") // PENDING, APPROVED, REJECTED, CANCELLED
+  reviewedBy    String? // User ID
+  reviewReason  String?
+  reviewedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  enterprise  Enterprise  @relation(fields: [enterpriseId], references: [id])
+  company     Company     @relation(fields: [companyId], references: [id])
+  entitlement Entitlement @relation(fields: [entitlementId], references: [id])
+  targetUser  User?       @relation("LicenseRequestTargetUser", fields: [targetUserId], references: [id])
+  activation  Activation?
+
+  @@index([enterpriseId])
+  @@index([companyId])
+  @@index([status])
+  @@index([targetUserId])
+}
+
+// The point at which an APPROVED LicenseRequest becomes an actual issued
+// license right for one named employee — distinct from both the approval
+// decision (LicenseRequest.status = APPROVED) and the concrete machine that
+// eventually uses it (Installation). See docs/activation-domain.md.
+//
+// Seat accounting: creating an Activation consumes exactly one seat from its
+// LicenseAllocation (consumedQuantity/version, same OCC pattern used
+// elsewhere in this schema) — this is the single authoritative consumption
+// point for this flow. Later linking an Installation to this Activation does
+// NOT consume a second seat. Only an explicit REVOKED (or system-evaluated
+// EXPIRED) transition frees the seat again; DEACTIVATED (device replacement)
+// deliberately does not.
+model Activation {
+  id             String    @id @default(uuid())
+  requestId      String    @unique // one Activation per LicenseRequest — idempotency guard against a retried approval call
+  allocationId   String
+  userId         String // the employee this license right is issued to — copied from LicenseRequest.targetUserId at creation time, never from requestedBy
+  companyId      String // denormalized from allocation.companyId, matching LicenseRequest's own dual (enterpriseId+companyId) scoping pattern
+  productId      String
+  editionId      String?
+  // The CURRENTLY live Installation using this activation, if any. Mutable:
+  // cleared when that installation is revoked/released (see
+  // Installation.activationId's comment) and set again once a replacement
+  // device registers with a freshly minted activation-bound EnrollmentToken.
+  installationId String?   @unique
+  status         String    @default("PENDING") // PENDING, ACTIVE, SUSPENDED, DEACTIVATED, REVOKED, EXPIRED
+  version        Int       @default(1) // OCC guard for concurrent seat consumption/release, mirrors LicenseAllocation.version
+  activatedAt    DateTime? // set the first time status becomes ACTIVE (installation linked)
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  request                  LicenseRequest    @relation(fields: [requestId], references: [id])
+  allocation               LicenseAllocation @relation(fields: [allocationId], references: [id])
+  user                     User              @relation(fields: [userId], references: [id])
+  company                  Company           @relation(fields: [companyId], references: [id])
+  product                  Product           @relation(fields: [productId], references: [id])
+  edition                  Edition?          @relation(fields: [editionId], references: [id])
+  installation             Installation?     @relation("ActivationCurrentInstallation", fields: [installationId], references: [id])
+  enrollmentTokens         EnrollmentToken[]
+  provisionedInstallations Installation[]    @relation("ActivationProvisionedInstallation")
+
+  @@index([companyId])
+  @@index([allocationId])
+  @@index([userId])
+  @@index([status])
+}
+
+model Installation {
+  id                  String    @id @default(uuid())
+  companyId           String
+  allocationId        String // Points to LicenseAllocation instead of License
+  enrollmentTokenId   String? // Enrollment token redeemed to create this installation (audit trail)
+  // Immutable provenance: which Activation (if any) caused this Installation
+  // to be created — set once at creation via an activation-bound
+  // EnrollmentToken, never changed afterwards. Deliberately NOT unique:
+  // device-replacement creates a new Installation row for the same
+  // Activation, so multiple Installations may share this value over time as
+  // history. The CURRENT live link lives on Activation.installationId
+  // instead (mutable, unique, cleared/reset as devices are swapped). Null
+  // for every installation created via the legacy (non-activation) enrollment
+  // path — permanently supported, not backfilled.
+  activationId        String?
+  deviceId            String
+  // Self-declared by whoever redeemed the token — not admin-verified, unlike
+  // a named Activation's userId. Required by AgentService.register() for a
+  // plain/legacy (non-activation-bound) token, so a bulk/anonymous batch of
+  // tokens still yields a record of who's actually using each seat. Left
+  // null for activation-bound registrations, where the real employee is
+  // already known via Activation.userId — asking again there would be
+  // redundant, unverified data shadowing the authoritative source.
+  employeeName        String?
+  employeeEmail       String?
+  hostname            String?
+  os                  String?
+  osVersion           String?
+  architecture        String?
+  applicationVersion  String?
+  agentVersion        String?
+  credentialHash      String? // sha256 of the installation secret issued at registration. Never store plaintext.
+  credentialRotatedAt DateTime?
+  status              String    @default("PENDING") // PENDING, ACTIVE, INACTIVE, SUSPENDED, REVOKED
+  lastHeartbeatAt     DateTime?
+  releasedAt          DateTime? // Set when the seat is freed back to the allocation (self-release or admin revoke)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  company         Company           @relation(fields: [companyId], references: [id])
+  allocation      LicenseAllocation @relation(fields: [allocationId], references: [id])
+  enrollmentToken EnrollmentToken?  @relation(fields: [enrollmentTokenId], references: [id])
+  activation      Activation?       @relation("ActivationProvisionedInstallation", fields: [activationId], references: [id])
+  // The Activation currently live-linked to THIS installation (see
+  // Activation.installationId) — distinct from the `activation` relation
+  // above, which is this installation's own immutable provenance. Prisma
+  // requires both directions of a self-referencing-looking pair like this to
+  // be named relations even though at most one will ever be populated per
+  // row pair.
+  currentFor      Activation?       @relation("ActivationCurrentInstallation")
+
+  telemetryState        InstallationTelemetryState?
+  serviceStatusEvents   ServiceStatusEvent[]
+  scanRuns              ScanRun[]
+  scanFindingSummaries  ScanFindingSummary[]
+  enforcementWindows    EnforcementWindow[]
+  agentCommands         AgentCommand[]
+
+  @@index([companyId])
+  @@index([allocationId])
+  @@index([deviceId])
+  @@index([status])
+  @@index([activationId])
+}
+
+model AuditEvent {
+  id           String   @id @default(uuid())
+  enterpriseId String?
+  companyId    String?
+  actorId      String
+  actorType    String // "USER", "SYSTEM", "AGENT"
+  action       String
+  targetType   String
+  targetId     String?
+  result       String // "SUCCESS", "DENIED", "FAILURE"
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  enterprise Enterprise? @relation(fields: [enterpriseId], references: [id])
+  company    Company?    @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
+  @@index([enterpriseId])
+  @@index([createdAt])
+}
+
+// ─── Fleet Telemetry Models ──────────────────────────────────────────────────
+
+// Hot row: live state for an installation updated on every ping.
+model InstallationTelemetryState {
+  id                 String    @id @default(uuid())
+  installationId     String    @unique
+  companyId          String
+  clientTime         DateTime?
+  serverTime         DateTime  @default(now())
+  serviceRunning     Boolean   @default(false)
+  watcherActive      Boolean   @default(false)
+  serviceStartedAt   DateTime?
+  policyHash         String?
+  agentVersion       String?
+  applicationVersion String?
+  outboxDepth        Int       @default(0)
+  lastScanAt         DateTime?
+  lastEnforcementAt  DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  installation Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([installationId])
+}
+
+// Cold history: service/watcher state changes or periodic (>= 15 min) snapshot.
+model ServiceStatusEvent {
+  id             String   @id @default(uuid())
+  installationId String
+  companyId      String
+  serviceRunning Boolean
+  watcherActive  Boolean
+  recordedAt     DateTime @default(now())
+
+  installation Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([installationId, recordedAt])
+  @@index([companyId, recordedAt])
+}
+
+// Completed/cancelled/failed scan summary.
+model ScanRun {
+  id               String    @id @default(uuid())
+  installationId   String
+  companyId        String
+  clientScanId     String    // Client idempotency key
+  scanSource       String    // "directory_scan" | "full_system_scan"
+  targetSummary    String?   // Drive letters summary or folder when syncFullPaths
+  status           String    // "completed" | "cancelled" | "failed"
+  startedAt        DateTime
+  completedAt      DateTime?
+  durationSeconds  Int       @default(0)
+  filesScanned     Int       @default(0)
+  filesWithPii     Int       @default(0)
+  totalFindings    Int       @default(0)
+  highestTier      String?
+  tierCounts       Json?     // e.g. {"Confidential": 4}
+  entityTypeTotals Json?     // e.g. {"EMAIL_ADDRESS": 12}
+  filesTruncated   Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+
+  installation Installation         @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  findings     ScanFindingSummary[]
+
+  @@unique([installationId, clientScanId])
+  @@index([companyId, startedAt])
+  @@index([installationId, startedAt])
+}
+
+// Capped per-file scan findings (tier >= Confidential, highest first).
+model ScanFindingSummary {
+  id               String   @id @default(uuid())
+  scanRunId        String
+  installationId   String
+  pathRef          String   // sha256:... or literal path if syncFullPaths enabled
+  tier             String
+  entityTypeCounts Json     // e.g. {"IN_AADHAAR": 1}
+  watermarkStatus  String?  // "APPLIED" | "PENDING" | null
+  createdAt        DateTime @default(now())
+
+  scanRun      ScanRun      @relation(fields: [scanRunId], references: [id], onDelete: Cascade)
+  installation Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@index([scanRunId])
+  @@index([installationId])
+}
+
+// 15-minute UTC-aligned enforcement event aggregation window.
+model EnforcementWindow {
+  id             String   @id @default(uuid())
+  installationId String
+  companyId      String
+  windowStart    DateTime
+  windowEnd      DateTime
+  source         String   // "Word" | "Excel" | "Filesystem Watcher"
+  actionCounts   Json     // {"block": 2, "quarantine": 1, ...}
+  tierCounts     Json     // {"Restricted": 2}
+  overrideCount  Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  installation Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([installationId, windowStart, source])
+  @@index([companyId, windowStart])
+  @@index([installationId, windowStart])
+}
+
+// Admin-issued asynchronous command to an agent.
+model AgentCommand {
+  id             String    @id @default(uuid())
+  installationId String
+  companyId      String
+  commandType    String    // "force_policy_refresh" | "request_diagnostic_snapshot" | "request_service_restart"
+  status         String    @default("PENDING") // PENDING, DELIVERED, ACKNOWLEDGED, EXPIRED, CANCELLED
+  issuedByUserId String
+  issuedAt       DateTime  @default(now())
+  expiresAt      DateTime
+  deliveredAt    DateTime?
+  acknowledgedAt DateTime?
+  result         String?   // "success" | "failed" | "unsupported"
+  resultDetail   String?   // Diagnostic snapshot JSON or error detail <= 2048 chars
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  installation Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  issuedByUser User         @relation("AgentCommandIssuedBy", fields: [issuedByUserId], references: [id])
+
+  @@index([installationId, status])
+  @@index([companyId, status])
+}

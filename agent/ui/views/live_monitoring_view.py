@@ -120,6 +120,11 @@ class LiveMonitoringView(QWidget):
         top_row.addWidget(self.lbl_service_badge)
         header_layout.addLayout(top_row)
 
+        # Fleet reporting status sub-line (§8.4)
+        self.lbl_fleet_status = QLabel("Fleet Reporting: Not connected (standalone)", header_card)
+        self.lbl_fleet_status.setStyleSheet("font-size: 11px; color: #94a3b8; font-weight: 500; margin-top: 2px;")
+        header_layout.addWidget(self.lbl_fleet_status)
+
         # Control Buttons Sub-bar
         ctrl_bar = QHBoxLayout()
         ctrl_bar.setSpacing(10)
@@ -420,6 +425,40 @@ class LiveMonitoringView(QWidget):
         self.card_policy.lbl_val.setText(fs_mode)
         num_folders = len(policy_manager.watched_folders)
         self.card_watcher.lbl_val.setText(f"{num_folders} FOLDERS")
+
+        # Update Fleet Reporting status line
+        try:
+            from datetime import datetime, timezone
+            from backend import license_client, telemetry_client
+            if not license_client.is_registered():
+                self.lbl_fleet_status.setText("Fleet Reporting: Not connected (standalone)")
+                self.lbl_fleet_status.setStyleSheet("font-size: 11px; color: #94a3b8; font-weight: 500;")
+            else:
+                telem_state = telemetry_client._load_telemetry_state()
+                cfg = telem_state.get("telemetry_config", {})
+                outbox_depth = db_manager.get_telemetry_outbox_depth()
+                if not cfg.get("enabled", True):
+                    self.lbl_fleet_status.setText("Fleet Reporting: Paused by your administrator")
+                    self.lbl_fleet_status.setStyleSheet("font-size: 11px; color: #f59e0b; font-weight: 600;")
+                elif outbox_depth > 0:
+                    self.lbl_fleet_status.setText(f"Fleet Reporting: Offline · {outbox_depth} queued, will retry")
+                    self.lbl_fleet_status.setStyleSheet("font-size: 11px; color: #38bdf8; font-weight: 500;")
+                else:
+                    last_sync = telem_state.get("last_sync_time")
+                    if last_sync:
+                        try:
+                            dt = datetime.fromisoformat(last_sync)
+                            mins = int(max(0, (datetime.now(timezone.utc) - dt).total_seconds() // 60))
+                            sync_text = "just now" if mins < 1 else f"{mins} min ago"
+                        except Exception:
+                            sync_text = "recently"
+                        self.lbl_fleet_status.setText(f"Fleet Reporting: Reporting · last sync {sync_text}")
+                        self.lbl_fleet_status.setStyleSheet("font-size: 11px; color: #34d399; font-weight: 500;")
+                    else:
+                        self.lbl_fleet_status.setText("Fleet Reporting: Connected · awaiting initial sync")
+                        self.lbl_fleet_status.setStyleSheet("font-size: 11px; color: #38bdf8; font-weight: 500;")
+        except Exception:
+            pass
 
         self.status_changed_signal.emit(running)
 

@@ -78,9 +78,22 @@ class TestLicenseClient(unittest.TestCase):
         )
         print("[OK] HTTP localhost carve-out test passed.")
 
+    def test_03b_http_private_lan_ip_carveout_accepted(self):
+        self.assertEqual(
+            _validate_backend_url("http://10.197.56.244:3001/api/v1"),
+            "http://10.197.56.244:3001/api/v1",
+        )
+        self.assertEqual(
+            _validate_backend_url("http://192.168.1.50:3001/api/v1"),
+            "http://192.168.1.50:3001/api/v1",
+        )
+        print("[OK] HTTP private LAN IP carve-out test passed.")
+
     def test_04_http_non_localhost_rejected(self):
         with self.assertRaises(LicenseConfigError):
             _validate_backend_url("http://licensing.example.com/api/v1")
+        with self.assertRaises(LicenseConfigError):
+            _validate_backend_url("http://8.8.8.8:3001/api/v1")
         print("[OK] HTTP non-localhost rejected test passed.")
 
     def test_05_non_http_scheme_rejected(self):
@@ -399,6 +412,78 @@ class TestLicenseClient(unittest.TestCase):
         license_client.release()
         self.assertFalse(license_client.is_registered())
         print("[OK] release() best-effort local-clear test passed.")
+
+    def test_45_update_policy_status_immediate_enforcement(self):
+        license_client._save_state({
+            "installationId": "install-45", "credential": "cred-45",
+            "lastCheckinAt": datetime.now(timezone.utc).isoformat(),
+            "heartbeatIntervalSeconds": 86400, "gracePeriodDays": 14,
+            "lastPolicy": {"status": "ACTIVE", "suspended": False, "revoked": False},
+        })
+        license_client._cached_state = None
+
+        allowed, _ = license_client.enforcement_status()
+        self.assertTrue(allowed)
+
+        # Update to SUSPENDED
+        license_client.update_policy_status("SUSPENDED")
+        allowed, reason = license_client.enforcement_status()
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "License suspended")
+
+        # Update to REVOKED
+        license_client.update_policy_status("REVOKED")
+        allowed, reason = license_client.enforcement_status()
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "License revoked")
+
+        # Update back to ACTIVE
+        license_client.update_policy_status("ACTIVE")
+        allowed, reason = license_client.enforcement_status()
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "OK")
+        print("[OK] update_policy_status immediate enforcement test passed.")
+
+    @patch("backend.license_client.requests.get")
+    def test_46_refresh_policy_catches_server_revocation_and_suspension(self, mock_get):
+        license_client._save_state({
+            "installationId": "install-46", "credential": "cred-46",
+            "lastCheckinAt": datetime.now(timezone.utc).isoformat(),
+            "heartbeatIntervalSeconds": 86400, "gracePeriodDays": 14,
+            "lastPolicy": {"status": "ACTIVE", "suspended": False, "revoked": False},
+        })
+        license_client._cached_state = None
+
+        # 1. Server returns 401 Unauthorized (revoked)
+        mock_get.return_value = MagicMock(status_code=401, ok=False)
+        allowed, reason = license_client.refresh_policy(timeout_seconds=1.0)
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "License revoked")
+
+        # 2. Server returns 200 with suspended: true
+        mock_get.return_value = MagicMock(
+            status_code=200, ok=True,
+            json=lambda: {"status": "SUSPENDED", "suspended": True, "revoked": False}
+        )
+        allowed, reason = license_client.refresh_policy(timeout_seconds=1.0)
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "License suspended")
+        print("[OK] refresh_policy catches revocation and suspension test passed.")
+
+    @patch("backend.license_client.requests.get", side_effect=Exception("network timeout"))
+    def test_47_refresh_policy_graceful_fallback_on_network_error(self, mock_get):
+        license_client._save_state({
+            "installationId": "install-47", "credential": "cred-47",
+            "lastCheckinAt": datetime.now(timezone.utc).isoformat(),
+            "heartbeatIntervalSeconds": 86400, "gracePeriodDays": 14,
+            "lastPolicy": {"status": "ACTIVE", "suspended": False, "revoked": False},
+        })
+        license_client._cached_state = None
+
+        allowed, reason = license_client.refresh_policy(timeout_seconds=1.0)
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "OK")
+        print("[OK] refresh_policy graceful offline fallback test passed.")
 
 
 if __name__ == "__main__":

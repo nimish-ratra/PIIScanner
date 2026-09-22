@@ -78,6 +78,7 @@ hiddenimports = [
     "PySide6.QtXml",
     "requests",
     "backend.license_client",
+    "backend.telemetry_client",
     "backend.watermark_engine",
     "backend.watermark_backup",
     "backend.drive_scanner",

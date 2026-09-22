@@ -24,6 +24,7 @@ class TestBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        os.environ["CLAISSIFY_STANDALONE"] = "1"
         # Configure Java environment
         configure_java_environment()
         # Create temp folder for tests

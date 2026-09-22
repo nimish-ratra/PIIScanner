@@ -2,7 +2,7 @@
 ; Produces a single standalone Windows Setup installer (.exe)
 
 #define MyAppName "PII Sentinel"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Sentinel Security"
 #define MyAppExeName "PIISentinel.exe"
 
@@ -15,7 +15,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\dist_installer
-OutputBaseFilename=PIISentinel_Setup_v1.0
+OutputBaseFilename=PIISentinel_Setup_v1.1
 SetupIconFile=assets\app_icon.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -46,10 +46,18 @@ function CheckForJava(): Boolean;
 var
   ResultCode: Integer;
 begin
+  // 1. Check if the bundled JRE was installed with the application
+  if FileExists(ExpandConstant('{app}\jre\bin\java.exe')) then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  // 2. Check if Java is in the system PATH
   Result := Exec('cmd.exe', '/c where java.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
   if not Result then
   begin
-    // Check if Eclipse Adoptium or Java directories exist
+    // 3. Check common Java/Adoptium install directories
     Result := DirExists(ExpandConstant('{commonpf}\Eclipse Adoptium')) or
               DirExists(ExpandConstant('{commonpf}\Java')) or
               DirExists(ExpandConstant('{commonpf64}\Eclipse Adoptium')) or
@@ -61,6 +69,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    // If bundled JRE is present, never prompt the user
     if not CheckForJava() then
     begin
       MsgBox('Notice: Apache Tika requires a Java Runtime (Java 8+ or Eclipse Adoptium) to extract text from documents.' + #13#10 +

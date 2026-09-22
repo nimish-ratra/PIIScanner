@@ -12,6 +12,7 @@ loopback service token.
 """
 
 import os
+import ipaddress
 import json
 import logging
 import hashlib
@@ -32,7 +33,7 @@ logger = logging.getLogger("pii_sentinel.license")
 
 LICENSE_FILE_NAME = "license.json"
 DEFAULT_BACKEND_URL = "http://localhost:3001/api/v1"  # local dev TrustFabric API; overridden for real deployments
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 REQUEST_TIMEOUT_SECONDS = 10
 
 _cached_state: Optional[Dict[str, Any]] = None
@@ -53,23 +54,35 @@ class LicenseConfigError(LicenseError):
 _LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1"}
 
 
+def _is_loopback_or_private_host(hostname: str) -> bool:
+    """Check if the hostname is a local loopback name or private RFC 1918 / RFC 4193 IP."""
+    if hostname in _LOCALHOST_NAMES:
+        return True
+    try:
+        ip = ipaddress.ip_address(hostname)
+        return ip.is_private or ip.is_loopback
+    except ValueError:
+        return False
+
+
 def _validate_backend_url(url: str) -> str:
     """
     Refuse to send licensing credentials (enrollment tokens, installation
     secrets) to anything but an HTTPS endpoint. The only exception is
-    localhost, for local development against a plain-HTTP dev API server —
-    never appropriate for a real deployment, where PIISENTINEL_LICENSE_BACKEND_URL
-    or the persisted config must be an https:// URL.
+    localhost and private LAN IPs (e.g. mobile hotspot / test lab), for local
+    development against a plain-HTTP dev API server — never appropriate for a
+    real deployment, where PIISENTINEL_LICENSE_BACKEND_URL or the persisted
+    config must be an https:// URL.
     """
     parsed = urlsplit(url)
     hostname = (parsed.hostname or "").lower()
     if parsed.scheme == "https":
         return url.rstrip("/")
-    if parsed.scheme == "http" and hostname in _LOCALHOST_NAMES:
+    if parsed.scheme == "http" and _is_loopback_or_private_host(hostname):
         return url.rstrip("/")
     raise LicenseConfigError(
         f"Refusing to send licensing credentials to a non-HTTPS backend URL ({url!r}). "
-        "Only https:// is permitted outside of localhost development."
+        "Only https:// is permitted outside of localhost/private LAN development."
     )
 
 
@@ -299,6 +312,61 @@ def get_policy() -> Dict[str, Any]:
     }
     _save_state(state)
     return state
+
+
+def update_policy_status(status: str, suspended: bool = False, revoked: bool = False) -> None:
+    """
+    Updates lastPolicy in license_state.json based on server-reported status.
+    Ensures that real-time status transitions (e.g. from telemetry pings) immediately
+    update local enforcement.
+    """
+    state = _load_state()
+    if not is_registered():
+        return
+    current_policy = state.get("lastPolicy", {})
+    new_policy = {
+        "status": status,
+        "suspended": suspended or status == "SUSPENDED",
+        "revoked": revoked or status == "REVOKED",
+    }
+    if current_policy != new_policy:
+        state["lastPolicy"] = new_policy
+        _save_state(state)
+        logger.info(
+            f"License policy updated from server: status={status}, "
+            f"suspended={new_policy['suspended']}, revoked={new_policy['revoked']}"
+        )
+
+
+def refresh_policy(timeout_seconds: float = 3.0) -> Tuple[bool, str]:
+    """
+    Actively queries the TrustFabric server to refresh the policy cache.
+    - If 401/403: records REVOKED state immediately.
+    - If 200: updates cached status, suspended, revoked flags.
+    - If unreachable/timeout: gracefully falls back to cached grace-period logic.
+    Returns (allowed, reason) per enforcement_status().
+    """
+    if not is_registered():
+        return False, "Not activated"
+
+    state = _load_state()
+    url = f"{get_backend_url()}/agent/policy"
+    try:
+        resp = requests.get(url, headers=_authorized_headers(state), timeout=timeout_seconds)
+        if resp.status_code in (401, 403):
+            update_policy_status("REVOKED", revoked=True)
+            return False, "License revoked"
+        if resp.ok:
+            data = resp.json()
+            update_policy_status(
+                status=data.get("status", "ACTIVE"),
+                suspended=bool(data.get("suspended")),
+                revoked=bool(data.get("revoked")),
+            )
+    except Exception as e:
+        logger.debug(f"Live policy refresh failed (using cached state): {e}")
+
+    return enforcement_status()
 
 
 def release() -> None:

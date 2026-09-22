@@ -24,6 +24,8 @@ from service.enforcement_policy import policy_manager
 from service.api_server import app
 from backend.config import get_logs_dir
 from backend import license_client
+from backend import telemetry_client
+from datetime import datetime, timezone
 
 logger = logging.getLogger("pii_sentinel.service_runner")
 
@@ -85,6 +87,9 @@ class EnforcementServiceRunner:
         self._tray_icon = None
         self._license_thread: Optional[threading.Thread] = None
         self._license_stop_event = threading.Event()
+        self._telemetry_thread: Optional[threading.Thread] = None
+        self._telemetry_stop_event = threading.Event()
+        self._service_started_at: Optional[str] = None
 
     def start_api_server(self) -> None:
         """Start FastAPI uvicorn server in a dedicated thread bound to 127.0.0.1."""
@@ -138,6 +143,48 @@ class EnforcementServiceRunner:
             if self._license_stop_event.wait(sleep_for):
                 return
 
+    def start_telemetry_loop(self) -> None:
+        """Start the background TrustFabric fleet telemetry loop. Pings every
+        server-supplied interval (clamped 60-900s), aggregates enforcement windows
+        every 15 min, and flushes queued outbox summaries."""
+        self._telemetry_thread = threading.Thread(
+            target=self._telemetry_loop, daemon=True, name="TelemetryThread"
+        )
+        self._telemetry_thread.start()
+
+    def _telemetry_loop(self) -> None:
+        last_enforcement_agg = 0.0
+        while self._is_running:
+            sleep_for = telemetry_client.DEFAULT_PING_INTERVAL_SECONDS
+            try:
+                # 1. Send periodic ping
+                ping_res = telemetry_client.send_ping(
+                    service_running=self._is_running and not self._is_paused,
+                    watcher_active=bool(self._watcher and not self._is_paused),
+                    service_started_at=self._service_started_at
+                )
+                if ping_res and "telemetry" in ping_res:
+                    interval = ping_res["telemetry"].get("intervalSeconds", telemetry_client.DEFAULT_PING_INTERVAL_SECONDS)
+                    sleep_for = max(
+                        telemetry_client.MIN_PING_INTERVAL_SECONDS,
+                        min(telemetry_client.MAX_PING_INTERVAL_SECONDS, interval)
+                    )
+
+                # 2. Check 15-min enforcement aggregation
+                now_ts = time.time()
+                if now_ts - last_enforcement_agg >= 15 * 60:
+                    telemetry_client.aggregate_enforcement_windows()
+                    last_enforcement_agg = now_ts
+
+                # 3. Flush outbox
+                telemetry_client.flush_outbox()
+
+            except Exception as e:
+                logger.debug(f"Telemetry loop iteration error: {e}")
+
+            if self._telemetry_stop_event.wait(sleep_for):
+                return
+
     def start_file_watcher(self) -> None:
         """Start generic filesystem watcher if enabled."""
         if not self.enable_watcher or not policy_manager.enforce_watcher:
@@ -169,6 +216,17 @@ class EnforcementServiceRunner:
         """Clean shutdown of API server, watcher, and tray icon."""
         self._is_running = False
         self._license_stop_event.set()
+        self._telemetry_stop_event.set()
+
+        # Send best-effort final ping with serviceRunning=false
+        try:
+            telemetry_client.send_ping(
+                service_running=False,
+                watcher_active=False,
+                service_started_at=self._service_started_at
+            )
+        except Exception as e:
+            logger.debug(f"Final shutdown ping failed: {e}")
         if self._watcher:
             try:
                 self._watcher.stop()
@@ -279,7 +337,9 @@ class EnforcementServiceRunner:
         # normally set this, but that happens after this point and the license
         # loop's `while self._is_running` check would otherwise exit immediately.
         self._is_running = True
+        self._service_started_at = datetime.now(timezone.utc).isoformat()
         self.start_license_heartbeat()
+        self.start_telemetry_loop()
 
         if with_tray:
             try:

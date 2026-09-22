@@ -81,3 +81,19 @@ cloud-extender/aws/response.json
 cloud-extender/aws/result.json
 cloud_scan_results.csv
 
+# Local JRE binaries and scratch files
+agent/packaging/jre/
+scratch/
+_external_git_backup/
+
+# Licensing software dependencies & build caches
+_external/**/node_modules/
+_external/**/.next/
+_external/**/dist/
+_external/**/build/
+_external/**/.turbo/
+_external/**/coverage/
+_external/**/*.tsbuildinfo
+_external/**/.env
+_external/**/.env.*
+!_external/**/.env.example

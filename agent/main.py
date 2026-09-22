@@ -79,7 +79,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ClAIssify")
     app.setOrganizationName("Sentinel Security")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationVersion("1.1.0")
 
     # Holds whichever top-level window is currently active so Qt doesn't
     # garbage-collect it once main()'s own locals would otherwise be the
@@ -88,20 +88,38 @@ def main():
     # we already know licensing allows it.
     windows: dict = {}
 
+    def show_license_gate(reason: str = "License suspended or revoked") -> None:
+        logger.warning(f"License enforcement active: {reason}. Presenting License Gate.")
+        if "main" in windows:
+            main_win = windows.pop("main")
+            main_win.close()
+        gate = LicenseGateWindow(on_licensed=launch_main_window)
+        windows["gate"] = gate
+        gate.show()
+
     def launch_main_window() -> None:
-        window = MainWindow()
+        if "gate" in windows:
+            gate_win = windows.pop("gate")
+            gate_win.close()
+        window = MainWindow(on_license_lost=show_license_gate)
         windows["main"] = window
         window.showMaximized()  # maximized by default, not OS-level fullscreen
 
     standalone = "--standalone" in sys.argv or os.environ.get("CLAISSIFY_STANDALONE", "0") == "1"
-    allowed, reason = license_client.enforcement_status()
+    if not standalone and license_client.is_registered():
+        # Live refresh on startup so newly suspended/revoked seats are caught immediately
+        try:
+            allowed, reason = license_client.refresh_policy(timeout_seconds=3.0)
+        except Exception as e:
+            logger.debug(f"Startup license refresh skipped (using cached state): {e}")
+            allowed, reason = license_client.enforcement_status()
+    else:
+        allowed, reason = license_client.enforcement_status()
+
     if allowed or standalone:
         launch_main_window()
     else:
-        logger.warning(f"Not licensed to run yet: {reason}")
-        gate = LicenseGateWindow(on_licensed=launch_main_window)
-        windows["gate"] = gate
-        gate.show()
+        show_license_gate(reason)
 
     sys.exit(app.exec())
 

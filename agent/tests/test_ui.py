@@ -28,6 +28,7 @@ class TestUI(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        os.environ["CLAISSIFY_STANDALONE"] = "1"
         # Create singleton QApplication if not already existing
         cls.app = QApplication.instance()
         if not cls.app:

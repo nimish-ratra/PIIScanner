@@ -180,6 +180,19 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_tier ON enforcement_events(tier)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_action ON enforcement_events(action_taken)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_enforcement_app_source ON enforcement_events(app_source)")
+
+            # Telemetry Outbox table (Phase 2 Fleet Telemetry)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS telemetry_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    attempts INTEGER DEFAULT 0,
+                    claimed_at TEXT
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_outbox_claim ON telemetry_outbox (claimed_at, id)")
             conn.commit()
 
     def insert_scan(self, scan_data: Dict[str, Any], findings: List[Dict[str, Any]]) -> None:
@@ -587,6 +600,86 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM enforcement_events")
             conn.commit()
+
+    def enqueue_telemetry_outbox(self, kind: str, payload_json: str, max_rows: int = 1000) -> int:
+        """Enqueue a telemetry payload (scan summary or enforcement window) into outbox.
+        Enforces a hard cap of max_rows by dropping the oldest rows if necessary."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO telemetry_outbox (kind, payload_json, created_at) VALUES (?, ?, ?)",
+                (kind, payload_json, now)
+            )
+            inserted_id = cursor.lastrowid
+            # Enforce max_rows cap
+            cursor.execute("SELECT COUNT(*) FROM telemetry_outbox")
+            count = cursor.fetchone()[0]
+            if count > max_rows:
+                excess = count - max_rows
+                cursor.execute(
+                    "DELETE FROM telemetry_outbox WHERE id IN (SELECT id FROM telemetry_outbox ORDER BY id ASC LIMIT ?)",
+                    (excess,)
+                )
+            conn.commit()
+            return inserted_id
+
+    def claim_telemetry_outbox(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Atomically claims up to limit unclaimed outbox entries for delivery.
+        Safe across multiple processes (GUI and service runner)."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM telemetry_outbox WHERE claimed_at IS NULL ORDER BY id ASC LIMIT ?",
+                (limit,)
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return []
+            ids = [r[0] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            cursor.execute(
+                f"UPDATE telemetry_outbox SET claimed_at = ? WHERE id IN ({placeholders})",
+                [now] + ids
+            )
+            conn.commit()
+
+            cursor.execute(
+                f"SELECT id, kind, payload_json, created_at, attempts FROM telemetry_outbox WHERE id IN ({placeholders}) ORDER BY id ASC",
+                ids
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def ack_telemetry_outbox(self, outbox_ids: List[int]) -> None:
+        """Removes delivered telemetry payloads from outbox."""
+        if not outbox_ids:
+            return
+        placeholders = ",".join("?" for _ in outbox_ids)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"DELETE FROM telemetry_outbox WHERE id IN ({placeholders})", outbox_ids)
+            conn.commit()
+
+    def release_telemetry_outbox(self, outbox_ids: List[int]) -> None:
+        """Releases claimed outbox payloads after failure and increments attempt count."""
+        if not outbox_ids:
+            return
+        placeholders = ",".join("?" for _ in outbox_ids)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE telemetry_outbox SET claimed_at = NULL, attempts = attempts + 1 WHERE id IN ({placeholders})",
+                outbox_ids
+            )
+            conn.commit()
+
+    def get_telemetry_outbox_depth(self) -> int:
+        """Returns the current number of pending items in the telemetry outbox."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM telemetry_outbox")
+            return cursor.fetchone()[0]
 
 
 # Singleton instance

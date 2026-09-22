@@ -1,0 +1,30 @@
+{
+  "name": "enterprise-licensing-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
+    "test:e2e": "turbo run test:e2e --filter=@licensing/customer-portal",
+    "test:e2e:ui": "turbo run test:e2e:ui --filter=@licensing/customer-portal",
+    "test:e2e:debug": "turbo run test:e2e:debug --filter=@licensing/customer-portal"
+  },
+  "devDependencies": {
+    "prettier": "^3.0.0",
+    "turbo": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "overrides": {
+    "multer": "^2.3.0",
+    "deepmerge-ts": "^8.0.2"
+  }
+}

@@ -30,7 +30,18 @@ POTENTIAL_JAVA_DIRS = [
 
 
 def find_system_java() -> Optional[Path]:
-    """Find a functional java.exe binary on the system."""
+    """Find a functional java.exe binary on the system (prioritizes bundled JRE)."""
+    # 0. Check bundled JRE inside application directory (standalone distribution)
+    app_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+    bundled_candidates = [
+        app_dir / "jre" / "bin" / "java.exe",
+        app_dir / "_internal" / "jre" / "bin" / "java.exe",
+        Path(__file__).resolve().parent.parent / "packaging" / "jre" / "bin" / "java.exe",
+    ]
+    for candidate in bundled_candidates:
+        if candidate.is_file():
+            return candidate
+
     # 1. Check if java is already in PATH
     java_in_path = shutil.which("java")
     if java_in_path:

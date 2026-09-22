@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Secrets (keep .env.example files tracked)
+.env
+.env.*
+!.env.example
+
+# Build output and caches
+dist/
+build/
+.next/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# Test output
+playwright-report/
+test-results/
+
+# Logs
+*.log
+
+# Claude Code local state
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -11,9 +11,10 @@
 - **Primary Function:** A desktop application that recursively audits folders and documents for Personally Identifiable Information (PII), previews findings with secure redactions, extracts files while preserving directory trees, and packages files into password-protected encrypted archives.
 - **Air-Gapped & Local-First:**
   - **Zero cloud calls:** All document extraction, OCR, and NLP entity detection happen entirely on the local machine.
-  - **Zero telemetry:** No data, analytics, or file contents leave the host.
+  - **Zero cloud analytics / ad-hoc tracking:** No unauthorized data, analytics, or file contents leave the host.
   - **Zero external APIs:** Microsoft Presidio and Apache Tika run locally on host CPU and JVM.
-  - **One deliberate exception (Phase 4 — see §10):** Licensing/activation calls out to the TrustFabric backend over HTTPS. No scanned content, findings, or PII of any kind is ever included in that traffic — only an enrollment token, a hashed device fingerprint, and a self-declared name/email for accountability. Standalone evaluation mode is preserved without requiring internet access.
+  - **Deliberate exception 1 (Phase 4 — see §10):** Licensing/activation calls out to the TrustFabric backend over HTTPS. No scanned content, findings, or PII of any kind is ever included in that traffic — only an enrollment token, a hashed device fingerprint, and a self-declared name/email for accountability. Standalone evaluation mode is preserved without requiring internet access.
+  - **Deliberate exception 2 (Phase 5 — see §15):** Opt-in, counts-only fleet reporting to the company's own licensing backend (explicitly authorized by the repository owner). Only coarse metrics, sensitivity-tier and entity-type counts, 15-minute enforcement aggregates, and salted-hashed path references (unless company policy explicitly enables literal paths) leave the host; zero file contents, zero PII values, and zero free-text override reasons ever leave the machine. Standalone evaluation mode is preserved without requiring internet access, and zero telemetry is sent if unlicensed.
   - **100% Local File & DLP Processing:** All file inspection, OCR, Presidio entity detection, Office save interception, and format-aware watermarking happen strictly on the local machine with zero external cloud transmission.
 
 ---
@@ -52,6 +53,7 @@ c:\PIISentinalApp\
 │   │   ├── presidio_detector.py  # Microsoft Presidio wrapper, dynamic entity query, masking previews
 │   │   ├── reporter.py           # Auto-generates report.csv, report.json, and interactive report.html
 │   │   ├── scanner.py            # Concurrent directory & drive walker (ThreadPoolExecutor) with pause/cancel
+│   │   ├── telemetry_client.py   # Fleet telemetry client — ping/scan-summary/enforcement/commands (Phase 5, see §15)
 │   │   ├── tika_extractor.py     # Apache Tika parser, JVM environment auto-config, OCR fallback
 │   │   ├── watermark_backup.py   # Byte-for-byte pre-mutation backup, rollback/restore, retention pruner
 │   │   └── watermark_engine.py   # Format-aware visual & NTFS ADS watermarking, idempotency engine
@@ -95,8 +97,10 @@ c:\PIISentinalApp\
 │   │   ├── test_backend.py       # Comprehensive unit test suite for backend modules
 │   │   ├── test_data/            # Synthetic sample documents for testing
 │   │   ├── test_license_client.py # 29-test suite for the TrustFabric licensing client (Phase 4, see §10)
+│   │   ├── test_telemetry_client.py # Comprehensive unit test suite for fleet telemetry client & firewall (Phase 5, see §15)
 │   │   ├── test_ui.py            # Automated UI test suite with live scanner execution
-│   │   └── verify_activation_manual.py # Standalone script showing only ActivationDialog for manual testing
+│   │   ├── verify_activation_manual.py # Standalone script showing only ActivationDialog for manual testing
+│   │   └── verify_telemetry_manual.py  # Standalone manual verification runner against live dev backend (Phase 5, see §15)
 │   ├── main.py                   # Main desktop application runner
 │   └── requirements.txt          # Python project dependencies
 ├── client/                       # Client workspace scaffold
@@ -289,8 +293,10 @@ It prints the resolved backend URL, whether a credential is already registered, 
 2. **Maintain Thread Safety:**
    - Any modifications touching `backend/scanner.py` must maintain lock synchronization around shared state and callback emissions.
    - UI updates must always cross from background worker threads to Qt GUI via PySide6 `Signal.emit()`. Never touch QWidget properties directly from worker threads.
-3. **Preserve Privacy Guarantees:**
-   - Never introduce network calls, cloud dependencies, or telemetry logging.
+3. **Preserve Privacy Guarantees & Authorized Communication Exceptions:**
+   - Never introduce general cloud dependencies, third-party analytics, or ad-hoc tracking. All inspection is strictly local.
+   - The only two documented network exceptions are: (1) TrustFabric licensing check-in (§10), and (2) opt-in, counts-only fleet telemetry to the company's own licensing backend (§15), explicitly authorized by the repository owner.
+   - Zero file content, zero PII values (raw or redacted), and zero free-text user override reasons may ever leave the device under any circumstance.
    - Raw PII must never be written to plaintext temporary files or insecure logs; always use `redact_value` when displaying sensitive data in UI or summaries.
 4. **Zero Console Window Flashing on Windows:**
    - Never spawn child processes (`subprocess.Popen` or `subprocess.run`) on Windows without specifying `creationflags=subprocess.CREATE_NO_WINDOW` and `startupinfo.wShowWindow = 0` (`SW_HIDE`). Console windows flashing during normal app usage degrade UX and trigger user alarm.
@@ -307,10 +313,11 @@ It prints the resolved backend URL, whether a credential is already registered, 
    - Never persist the installation credential (or any other secret) to `license.json` in plaintext — it must always go through `win32crypt.CryptProtectData`/`CryptUnprotectData` (DPAPI), scoped to the current Windows user.
    - Never build `Authorization` headers by re-prepending `installationId` to `state['credential']` — that field is already the full `"<installationId>.<secret>"` string returned by `POST /agent/register`; doing so once already produced a real bug (a malformed bearer token indistinguishable from a genuine revocation) — see `test_35_authorized_headers_do_not_double_prefix_installation_id` in `tests/test_license_client.py`.
    - Never let `agent/main.py` or `service/service_runner.py`'s `--service` entry point construct `MainWindow` / start the background service before checking `license_client.enforcement_status()` — a `PENDING`/`SUSPENDED`/`REVOKED`/grace-expired installation must never reach the scanning engine.
-10. **100% On-Device Local Endpoint Security Model:**
+10. **100% On-Device Local Endpoint Security Model & Documented Exceptions:**
     - The desktop application operates strictly on-device. All file discovery, text extraction, Presidio PII analysis, sensitivity classification, quarantine, and format-aware watermarking occur locally on the user's workstation.
-    - Zero data, metadata, or telemetry is ever transmitted to external cloud services or vendors.
-    - Standalone evaluation mode is preserved: while enterprise TrustFabric licensing check-in is supported via `backend/license_client.py`, unconfigured or offline standalone local execution remains fully functional.
+    - Zero file content, detected PII values, or free-text user override reasons are ever transmitted to external services or vendors.
+    - Documented exceptions: (1) Licensing check-in via `backend/license_client.py` (Phase 4, §10), and (2) opt-in, counts-only fleet telemetry via `backend/telemetry_client.py` (Phase 5, §15) to the company's own licensing backend over HTTPS. When fleet reporting is active, only counts, tiers, and salted-hashed paths (unless full paths are explicitly enabled by the company administrator) are synced; file contents never leave the host.
+    - Standalone evaluation mode is preserved: while enterprise TrustFabric licensing check-in and fleet reporting are supported, unconfigured or offline standalone local execution remains fully functional with zero outbound telemetry calls.
 11. **Keep `ui/theme.py` the Single Source of Truth for Chrome Styling (Phase 6, see §12):**
     - Structural styling (backgrounds, borders, radii, button/input/table appearance) belongs in `ui/theme.py`'s QSS, addressed by the existing object names (`#primaryButton`, `#sidebar`, `.card`/`QGroupBox`, etc.) — not as a new inline `setStyleSheet(...)` call scattered in a view file. Several older views (`results_view.py`, `settings_view.py`) still have such inline styles predating this rule; don't add more, and prefer migrating one to a theme selector over duplicating its hex values elsewhere.
     - The one legitimate exception is genuinely semantic/functional color — the offline badge, sensitivity-tier badges (`backend/classifier.py`'s `TIER_METADATA`), success/danger/warning buttons. Those must keep their meaning-carrying color; everything else should read from `ui/theme.py`'s tokens (including its one deliberate accent color, blue, used the same way the TrustFabric customer-portal uses it — see §12) rather than introducing new ad-hoc colors per view. There is a single fixed theme — do not reintroduce a Dark/Light toggle without being asked.
@@ -569,7 +576,7 @@ PII Sentinel is licensed and activated by a separate backend system, **TrustFabr
 ### 10.2 Licensing Client (`backend/license_client.py`)
 
 - **State Storage:** `%APPDATA%\PIISentinel\license.json`, **encrypted at rest via Windows DPAPI** (`win32crypt.CryptProtectData` / `CryptUnprotectData`, scoped to the current Windows user account — a copy of the file is useless on another machine or under another account). A pre-DPAPI plaintext file is still readable as graceful decay, never as an ongoing feature.
-- **Transport Security (`_validate_backend_url`):** Refuses to send an enrollment token or credential to anything but an `https://` URL. The only exception is an explicit `localhost`/`127.0.0.1` carve-out for local development — never appropriate for a real deployment. Backend URL resolves in order: `PIISENTINEL_LICENSE_BACKEND_URL` env var (installer-set) → `config.json`'s `license_backend_url` → the local dev default `http://localhost:3001/api/v1`. A misconfigured value fails loudly (`LicenseConfigError`), it never silently falls back.
+- **Transport Security (`_validate_backend_url`):** Refuses to send an enrollment token or credential to anything but an `https://` URL. The only exception is an explicit `localhost`/`127.0.0.1` and RFC 1918 / RFC 4193 private LAN IP carve-out (tested via `ipaddress.ip_address(hostname).is_private` or `is_loopback`) for local dev and multi-laptop testing over Wi-Fi / Mobile Hotspots. Any public IP (e.g. `8.8.8.8`) or public domain name over plain `http://` is strictly rejected with `LicenseConfigError`. Backend URL resolves in order: `PIISENTINEL_LICENSE_BACKEND_URL` env var (installer-set) → `config.json`'s `license_backend_url` → the local dev default `http://localhost:3001/api/v1`. A misconfigured value fails loudly (`LicenseConfigError`), it never silently falls back.
 - **Device Fingerprint (`compute_device_fingerprint`):** Reads the machine's BIOS/SMBIOS UUID via WMI (`pywin32`, already a project dependency — no new one needed) rather than trusting a self-reported value, and SHA-256 hashes it locally before it's ever transmitted — the raw hardware serial itself never leaves the device. Falls back to a MAC-address-derived id if WMI is unavailable.
 - **Bearer Credential Construction:** `state['credential']` returned by `register()` is already the full `"<installationId>.<secret>"` string per the TrustFabric protocol — `_authorized_headers()` must send it as-is (`Bearer {credential}`), never re-prepend `installationId`. Doing so once produced a real, hard-to-diagnose bug: a malformed token that the server correctly rejected as invalid, which looked identical to a genuine revocation from the client's point of view. Regression-tested (`test_35_authorized_headers_do_not_double_prefix_installation_id`).
 - **`enforcement_status() -> (allowed: bool, reason: str)`** is the single source of truth for "may this app run right now," implementing the grace-period rules above plus: never-activated, and `PENDING` (awaiting admin approval) both resolve to `allowed=False` with a human-readable reason.
@@ -580,22 +587,68 @@ PII Sentinel is licensed and activated by a separate backend system, **TrustFabr
 - Success messaging is state-aware: a `PENDING` result shows *"Request submitted — waiting for your Company Admin to approve it"*; anything landing `ACTIVE` shows *"Activated successfully."* — it never claims success when the app is actually still locked.
 - A definitive rejection (`LicenseError` — bad/expired/exhausted token, wrong email domain, etc.) is shown inline; a network/connectivity failure is shown as a distinct, friendlier message, so a user can tell "my token is wrong" apart from "I'm offline."
 
-### 10.4 Enforcement Gate (`ui/views/license_gate_window.py`, `main.py`, `service/service_runner.py`)
+### 10.4 Real-Time Enforcement Gate & Live Watchdog (`ui/views/license_gate_window.py`, `ui/main_window.py`, `main.py`, `service/service_runner.py`)
 
-The application **will not run at all** — GUI or headless background service — unless `license_client.enforcement_status()` currently returns `allowed=True`. This is checked at the very top of both entry points, before anything else is constructed:
+The application enforces licensing strictly and dynamically — across GUI and background service layers — ensuring that a suspended or revoked license cuts off access immediately without requiring an application restart or allowing scanning to proceed.
 
-- **`main()` (GUI path):** calls `enforcement_status()` **before** constructing `MainWindow` (which eagerly builds the entire scanning UI — Scan/Results/History/Live Monitoring views — regardless of licensing state). If allowed, `MainWindow` is built and shown as normal. If not, a lightweight `LicenseGateWindow` is shown instead, and `MainWindow` is only ever constructed later, from that window's `on_licensed` callback, once actually licensed.
-- **`service_runner.main()` (`--service` / headless path, e.g. Windows autostart):** the identical `enforcement_status()` check runs before the FastAPI microservice or file watcher are started at all — an autostart-launched background instance won't keep silently running if the license went bad since it was last approved, independent of whether the GUI is ever reopened to notice.
-- **`LicenseGateWindow`** is the persistent replacement for an earlier "popup then exit" implementation:
-  - Shows the current status with an icon/color (amber "Awaiting admin approval", red for suspended/revoked/grace-expired, gray for never-activated) and the exact reason text from `enforcement_status()`.
-  - **Auto-refreshes every 30 seconds** (`AUTO_REFRESH_INTERVAL_MS`) — each refresh attempts a **live heartbeat** first (not just re-reading cached state), so a Company Admin's approval is picked up automatically without the user doing anything.
-  - A "Check Now" button forces an immediate manual refresh; an "Activate…" button reopens `ActivationDialog` (first-time activation, or entering a different token).
-  - The moment a refresh finds `allowed=True`, it invokes the caller-supplied `on_licensed()` callback and closes itself — `MainWindow` is constructed for the first time at that exact point, never before.
-- **Background heartbeat while the app is already running (`service_runner.py`):** a daemon thread heartbeats on the server-supplied interval (24h default) once `ACTIVE`, but retries every `LICENSE_RETRY_BACKOFF_SECONDS` (5 minutes) instead while `PENDING` or offline — the whole point of `PENDING` is to notice an approval promptly, not wait a full day for it.
+- **`main()` Startup Verification (GUI path):**
+  - Before constructing `MainWindow`, `main.py` executes a live online check via `license_client.refresh_policy(timeout_seconds=3.0)`.
+  - If the backend reports `SUSPENDED` or `REVOKED`, or rejects the credential (401/403), the local state is updated immediately via DPAPI and `LicenseGateWindow` is displayed.
+  - If the endpoint is offline/unreachable, it falls back gracefully to `enforcement_status()` which honors the 14-day grace period.
+  - If allowed, `MainWindow(on_license_lost=show_license_gate)` is launched.
+
+- **Real-Time License Watchdog in `MainWindow`:**
+  - A 10-second background watchdog timer runs inside `MainWindow` (optimized from 30s for ultra-responsive live demo revocation feedback).
+  - Performs local DPAPI checks every tick and launches an asynchronous background thread calling `license_client.refresh_policy(timeout_seconds=3.0)`.
+  - The instant a license is suspended or revoked on the server (or locally updated by telemetry):
+    1. Stops the watchdog timer.
+    2. Immediately cancels any active scan worker (`self.view_scan._on_cancel_scan()`).
+    3. Closes `MainWindow` and transitions seamlessly back to `LicenseGateWindow`.
+  - Once an administrator re-activates or un-suspends the seat in the portal, `LicenseGateWindow`'s 10-second polling detects `allowed=True`, closes itself, and calls `on_licensed` to re-launch `MainWindow` automatically.
+
+- **Pre-Scan Execution Guards:**
+  - `agent/ui/views/scan_view.py`: `_on_start_scan()` performs a fast synchronous live check via `license_client.refresh_policy(timeout_seconds=2.0)`. If revoked or suspended, it immediately surfaces an alert modal, triggers `_handle_license_lost` to transition to the license gate, and aborts before worker instantiation. If offline, it falls back gracefully to cached grace-period state.
+  - `agent/backend/scanner.py`: `Scanner.run()` checks `license_client.enforcement_status()`. If revoked/suspended and not in standalone mode, aborts immediately and raises `PermissionError`.
+
+- **Telemetry Ping Status Synchronization (`telemetry_client.py`):**
+  - Periodic pings (`POST /agent/telemetry/ping`) inspect server responses:
+    - On 401/403: records `REVOKED` state immediately via `update_policy_status("REVOKED", revoked=True)`.
+    - On 200 OK: parses `data["installationStatus"]`. If `SUSPENDED` or `REVOKED`, updates local DPAPI state immediately so `enforcement_status()` reflects it without waiting for the 24-hour heartbeat interval.
+    - If `ACTIVE`: clears any stale suspension flag.
+  - Outbox flushes (`POST /agent/telemetry/scan-summary`) handle 401 by immediately marking the credential as revoked.
+
+- **LAN & Mobile Hotspot Multi-Device Network Access:**
+  - **Endpoint Normalization in `apiClient` (`api-client.ts`):** `API_BASE` is configured as `/api/v1/customer` (or `/api/v1/vendor`). Callers frequently pass endpoints such as `/customer/telemetry/installations` or `/telemetry/installations`. `apiClient` normalizes the endpoint by automatically stripping leading `/customer/` or `/vendor/` prefixes, preventing double-path 404 errors (`/api/v1/customer/customer/telemetry/...`) and ensuring Fleet Protection (`/telemetry`) resolves cleanly.
+  - **Same-Origin API Rewrites & Session Cookie Scope:** In Next.js `next.config.ts`, `/api/v1/:path*` is proxied directly to `http://127.0.0.1:3001/api/v1/:path*`, and `api-client.ts` uses relative `/api/v1/customer` (or `/api/v1/vendor`) in the browser. When accessing the portal via a LAN IP (e.g. `10.197.56.244:3000`), modern browsers treat port 3000 and port 3001 as cross-origin and block third-party cookies over unencrypted HTTP. By proxying through Next.js on port 3000, the `TF_SESSION` cookie is issued first-party, allowing Next.js `middleware.ts` to validate sessions on `/overview` without redirect loops.
+  - **Next.js Allowed Dev Origins:** Added LAN IP addresses (e.g. `10.197.56.244`, `10.197.56.199`) to `allowedDevOrigins` in `next.config.ts` to prevent cross-origin dev server websocket warnings.
+  - **Host Binding:** `apps/api/src/main.ts` binds `app.listen(port, '0.0.0.0')`, and Next.js dev scripts specify `-H 0.0.0.0` across portals.
+  - **Windows Defender Firewall:** Inbound TCP traffic on ports 3000, 3001, and 3002 must be permitted when operating on Wi-Fi or Mobile Hotspot networks categorized as `Public`:
+    `New-NetFirewallRule -DisplayName "TrustFabric Dev Ports" -Direction Inbound -LocalPort 3000,3001,3002 -Protocol TCP -Action Allow`
+  - **AuthProvider Login Bypass & React 19 Hydration Boundary:** On `/login`, `auth-provider.tsx` immediately renders children without waiting for session evaluation. Furthermore, `login/page.tsx` wraps the form in `<Suspense>` and utilizes `useSearchParams()` instead of `React.use(searchParams)`. Forms use `type="button"` with `onClick={handleSubmit}` and explicit fallback DOM element resolution (`document.getElementById`) to eliminate any accidental HTML GET submissions.
+  - **Native Form Submission Suppression & Direct DOM Element Resolution:** To completely safeguard against unhydrated GET submissions appending plaintext passwords to query strings, forms explicitly declare `action="javascript:void(0);"` with `method="POST"`, submit buttons use `type="button"` with `onClick={handleSubmit}`, and inputs declare explicit `name="email"` and `name="password"` attributes with `onKeyDown` Enter interception. `handleSubmit` queries `document.getElementById` directly as a fallback to reliably capture browser autofill or password manager inputs across all browser rendering phases.
+  - **Next.js Dev Origins Allowlist (`allowedDevOrigins`):** Both `customer-portal` and `trustfabric-admin` declare `allowedDevOrigins: ['10.197.56.244', '10.197.56.199', 'localhost:3000', '127.0.0.1:3000']` in `next.config.ts`. Without this, Next.js blocks dev resources and HMR WebSocket connections when accessed from other devices over local network IP addresses.
+  - **Standard Development Seed Credentials:**
+    - **Customer Admin:** `india-admin@acme.test` (Acme India Admin) or `admin@acme.test` (Acme Admin) | Password: `DevPassword!123`
+    - **Vendor Admin:** `admin@trustfabric.com` | Password: `DevPassword!123`
+  - **VMware Virtualization Network Topology:** If the development environment runs inside a VMware Virtual Machine with NAT networking (`192.168.193.x`), outside devices on the physical hotspot cannot reach the VM's private virtual IP directly. The VMware Network Adapter must either be switched to **Bridged Mode** (so the VM receives a direct IP on the hotspot subnet) or port forwarding (`netsh portproxy`) must be configured on the host machine.
+
+- **`service_runner.main()` (`--service` / headless path):**
+  - Runs the identical `enforcement_status()` check before starting the FastAPI microservice or file watcher.
 
 ### 10.5 Testing Suite Additions
 
-- `tests/test_license_client.py` (29 tests): backend-URL HTTPS validation and the localhost carve-out, DPAPI encrypt/decrypt round-trip and legacy-plaintext/corrupted-file fallback, the full offline grace-period decision matrix (not-activated / revoked / suspended / pending / within-grace / grace-expired / never-checked-in), device fingerprint stability and opacity, the `Authorization` header double-prefix regression, and mocked register/heartbeat/release network calls including the `PENDING`-response path.
+- `tests/test_license_client.py` (33 tests): backend-URL HTTPS validation, the localhost and private LAN IP carve-out, DPAPI encrypt/decrypt round-trip and legacy-plaintext/corrupted-file fallback, the full offline grace-period decision matrix (not-activated / revoked / suspended / pending / within-grace / grace-expired / never-checked-in), device fingerprint stability and opacity, the `Authorization` header double-prefix regression, and mocked register/heartbeat/release network calls including the `PENDING`-response path.
+
+### 10.6 Zero-Dependency Windows Packaging & Embedded JRE Runtime
+
+To ensure seamless enterprise deployment on any client workstation without requiring end-users or administrators to manually install external runtimes:
+- **Embedded Minimal JRE (`agent/packaging/jre`):** Generated from Eclipse Adoptium OpenJDK Temurin 25 LTS via `jlink --add-modules java.se --strip-debug --no-man-pages --no-header-files`. Contains a lean ~51 MB standard Java SE runtime specifically tailored for running Apache Tika's backend (`tika-server.jar`).
+- **Priority Runtime Discovery (`backend/tika_extractor.py`):** `find_system_java()` checks application-bundled candidates first (`sys.executable` parent directory `jre\bin\java.exe` and `_internal\jre\bin\java.exe`) before querying system `PATH`, `JAVA_HOME`, or standard `Program Files` directories. When running as a packaged app, it configures the bundled JRE transparently.
+- **Automated Inno Setup Bundling (`packaging/build.py`, `packaging/installer.iss`):**
+  - `build.py` verifies or copies `packaging/jre` into `dist/PIISentinel/jre` during build.
+  - Inno Setup packages the JRE directly into `{app}\jre`.
+  - `installer.iss`'s `CheckForJava()` detects `FileExists('{app}\jre\bin\java.exe')` and returns `True`, completely eliminating the legacy "Notice: Apache Tika requires a Java Runtime..." popup during installation.
+  - The resulting single-file setup `PIISentinel_Setup_v1.0.exe` (121.1 MB) delivers an all-in-one, zero-dependency installation: simply run the setup on any Windows 10/11 laptop, and the application, its Python environment, NLP models, and Java document extraction engine run immediately out of the box.
 
 ---
 
@@ -606,7 +659,7 @@ To guarantee zero data exfiltration, the architecture enforces:
 1. **100% Local Discovery & Scanning**: Full physical drive enumeration, local folder walks, Apache Tika text extraction, and Presidio PII analysis execute strictly on-device in local system memory.
 2. **Active Real-Time DLP Enforcement**: The local classification microservice (FastAPI on loopback `127.0.0.1:47821`) coordinates with the Office Add-In (Word/Excel pre-save guard) and file-watcher interception to block or quarantine sensitive files before exfiltration.
 3. **Format-Aware Watermarking Engine**: Pre-save and batch visual watermarks (Word, Excel, PowerPoint, PDF, Images) and NTFS ADS metadata watermarks execute natively without external APIs.
-4. **Offline & Standalone Operation**: While enterprise enrollment and policy synchronization via TrustFabric (`backend/license_client.py`) is supported, the desktop application runs seamlessly in standalone local mode without blocking the user when offline.
+4. **Offline & Standalone Operation & Documented Telemetry Exception**: While enterprise enrollment and policy synchronization via TrustFabric (`backend/license_client.py`, §10) and opt-in counts-only fleet reporting (`backend/telemetry_client.py`, §15) are supported over HTTPS, the desktop application runs seamlessly in standalone local mode without blocking the user when offline. If unlicensed or standalone, zero telemetry network calls are made. Scanned file contents, detected PII values, and free-text user override reasons never leave the host under any configuration.
 
 ---
 
@@ -920,6 +973,87 @@ When the application starts up without an active enterprise license or prior to 
 - **SVG & Dynamic Imports in PyInstaller**: PyInstaller does not automatically detect dynamic SVG loading via `QSvgRenderer` in `ui/icons.py`. `PySide6.QtSvg` and `PySide6.QtXml` must be declared in `hiddenimports` in `packaging/pii_sentinel.spec`. Additionally, `ui/icons.py` implements fallback path resolution checking both `sys._MEIPASS` and `Path(sys.executable).parent / "_internal"` so packaged assets load seamlessly in one-dir and one-file modes.
 - **Binary File Locking During Rebuilds**: Windows locks executing `.exe` and loaded `.pyd` C-extension libraries (such as `blis/cy*.pyd` or `spacy`). Re-running `python packaging/build.py` while an instance of `PIISentinel.exe` is still open results in `PermissionError: [WinError 5] Access is denied: .../dist/PIISentinel/...`. Build scripts and developers must terminate any existing `PIISentinel.exe` processes (`Stop-Process -Name PIISentinel -Force`) prior to invoking PyInstaller.
 
+---
 
+## 15. Phase 5: Fleet Telemetry & Operational Visibility Protocol
 
+### 15.1 Architectural Overview & Core Invariants
+Phase 5 introduces outbound fleet telemetry connecting the local desktop agent ("ClAIssify") to the company's TrustFabric licensing and management backend.
+- **Unidirectional / Outbound Only:** The agent always initiates HTTPS calls. The backend never connects to an agent.
+- **Cadence & Piggybacked Commands:**
+  - Regular telemetry ping every 180s (server configurable, clamped to `[60, 900]` seconds).
+  - Commands issued by administrators (e.g. `force_policy_refresh`, `request_diagnostic_snapshot`, `request_service_restart`) ride back inside ping responses.
+  - Scan summaries are asynchronously enqueued at scan completion and flushed via the outbox.
+  - Enforcement events are aggregated into 15-minute UTC-aligned closed windows and uploaded every 15 minutes.
+- **Gate & Standalone Preservation:** If the agent is unlicensed, pending approval, or running in standalone evaluation mode, **zero telemetry network calls** are made.
+
+### 15.2 Privacy Contract & Runtime Payload Firewall
+The privacy guarantee is enforced structurally at runtime via `_assert_payload_safe(kind, payload)` in `backend/telemetry_client.py`:
+- **Allowed Outbound Data:** Service status booleans, agent/app version strings, policy hash, outbox depth, scan duration, counts of files scanned, findings count, count per sensitivity tier, counts per entity type, per-file capped records (max 200, tier $\ge$ Confidential), and 15-min enforcement action counts (block/quarantine/override/warn/allow).
+- **Strictly Prohibited:** Zero detected PII values (raw or redacted), zero file contents, zero user override reasons, zero entity summaries, and zero machine usernames.
+- **Path Protection:** Paths default to salted SHA-256 hashes (`sha256:<hex>` where salt is 16 random bytes stored locally in `%APPDATA%\PIISentinel\telemetry_state.json`). Literal paths are strictly rejected by the firewall unless the company's server-supplied policy has `syncFullPaths: true`.
+- Any firewall violation drops the payload, logs a warning with the reason (never the sensitive value), and continues without raising.
+
+### 15.3 Outbox Queue & Concurrency (`history.db`)
+To prevent telemetry failures from blocking scanning, UI, or real-time DLP operations:
+- A new table `telemetry_outbox` in SQLite `%APPDATA%\PIISentinel\history.db` buffers payloads:
+  - Columns: `id INTEGER PRIMARY KEY`, `kind TEXT`, `payload_json TEXT`, `created_at TIMESTAMP`, `attempts INTEGER`, `claimed_at TIMESTAMP`.
+  - Capped at 1,000 rows (oldest dropped on overflow).
+- Multi-process atomic claims (`UPDATE telemetry_outbox SET claimed_at = ? WHERE id IN (...)`) allow both the GUI process and the background Windows service to share the same database safely in WAL mode without double-sending.
+
+### 15.4 Remote Command Dispatcher
+Remote commands are deduplicated by `commandId` (persisted in `%APPDATA%\PIISentinel\telemetry_state.json`) and acknowledged before disruptive actions:
+1. `force_policy_refresh`: Invokes `license_client.heartbeat()` to fetch the latest policy.
+2. `request_service_restart`: Acknowledges `success` to the backend first, then triggers restart via `service_controller.restart_service()`.
+3. `request_diagnostic_snapshot`: Collects system metrics (versions, uptime, outbox depth, license state, OS) into a compact JSON string ($\le$ 2 KB) and acknowledges `success`.
+4. Unknown commands: Acknowledged as `unsupported`.
+
+### 15.5 UI Honesty & Transparency
+- `ui/views/live_monitoring_view.py`: Displays a live "Fleet Reporting" indicator (*Not connected (standalone)* / *Reporting · last sync Xm ago* / *Paused by your administrator* / *Offline · N queued*).
+- `ui/views/settings_view.py`: Adds a read-only "Fleet Reporting & Operational Telemetry" card in General Settings disclosing what is shared with the administrator, the active path mode (*Hashed references* vs *Full paths*), and the last sync timestamp.
+
+### 15.6 Testing & Verification
+```powershell
+# Run the automated telemetry client test suite (8 unit tests)
+python -m unittest agent/tests/test_telemetry_client.py -v
+
+# Run the complete agent regression suite (112 tests)
+python -m unittest discover -s agent/tests
+
+# Run the full end-to-end integration test against live backend & PostgreSQL
+python agent/tests/verify_telemetry_e2e.py
+
+# Run the live manual verification script against a local backend
+python agent/tests/verify_telemetry_manual.py
+```
+
+### 15.7 Backend Cross-Reference
+For the backend implementation (Prisma models, `apps/api/src/agent-telemetry/`, rate limits, retention pruning, and Customer Portal integration), refer to `_external/licensing-software-/docs/telemetry-model.md` and `_external/licensing-software-/docs/agent-protocol.md`.
+
+---
+
+## 16. Phase 7: Release v1.1.0, Standalone Zero-Dependency Installer, and Unified Repository
+
+### 16.1 Version 1.1.0 Promotion
+Version identifiers have been incremented to `1.1.0` across all agent and packaging entry points:
+- `agent/backend/license_client.py`: `AGENT_VERSION = "1.1.0"` (sent during activation, heartbeat, and fleet telemetry).
+- `agent/main.py`: `app.setApplicationVersion("1.1.0")`.
+- `agent/ui/main_window.py`: Version indicator badge displays `v1.1.0` in the sidebar footer.
+- `agent/packaging/installer.iss`: `#define MyAppVersion "1.1.0"`, Output filename set to `PIISentinel_Setup_v1.1.exe`.
+
+### 16.2 Standalone Zero-Dependency Installer (`PIISentinel_Setup_v1.1.exe`)
+To allow installation on any target Windows 10/11 machine without pre-installed prerequisites:
+- **Embedded JRE 25 LTS via `jlink`:** The custom, stripped OpenJDK Temurin 25 LTS Java Runtime (`java.base`, `java.desktop`, `java.logging`, `java.management`, `java.naming`, `java.sql`, `java.xml`) is bundled directly in `dist/PIISentinel/jre/` and packaged by Inno Setup into `{app}\jre`.
+- **Automatic JVM Discovery:** Apache Tika text extraction (`agent/backend/tika_extractor.py`) inspects `{sys.executable}/../jre/bin/java.exe` first, allowing seamless out-of-the-box operation on fresh client machines with zero configuration.
+- **Single-File Setup:** `agent/dist_installer/PIISentinel_Setup_v1.1.exe` (121.1 MB) delivers the complete payload (Python 3 runtime, PySide6, Presidio NLP models, spaCy, and OpenJDK).
+
+### 16.3 Unified Repository Architecture (`nimish-ratra/PIIScanner`)
+All components across the entire platform are unified into the single personal repository:
+- **Desktop Agent:** Located in `agent/`.
+- **Licensing & Management Software:** Consolidated under `_external/licensing-software-/` containing:
+  - `apps/api`: NestJS / Prisma REST API and agent protocol backend.
+  - `apps/customer-portal`: Next.js portal for company admins to manage keys, activations, and fleet health.
+  - `apps/trustfabric-admin`: Next.js vendor admin portal for issuing master licenses and monitoring tenants.
+- **Git Hygiene:** External upstream remotes (`kavyansh`) and nested `.git` submodules were removed, ensuring clean commits and pushes to `origin` (`git@github-personal:nimish-ratra/PIIScanner.git`).
+- **Comprehensive Changelog:** All architectural and code divergences from base licensing software are documented in `LICENSING_SOFTWARE_CHANGES.md`.
 

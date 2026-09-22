@@ -7,20 +7,23 @@ Settings), and inter-view workflows.
 
 import getpass
 import socket
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Callable
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget, QPushButton, QLabel, QFrame,
     QStatusBar, QButtonGroup, QLineEdit, QMenu, QApplication
 )
-from PySide6.QtCore import Qt, QSize, QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
+from PySide6.QtCore import Qt, QSize, QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QTimer
 from PySide6.QtGui import QIcon, QShortcut, QKeySequence, QTransform
 
 from backend.config import config_manager
 from backend.tika_extractor import check_java_status
+from backend import license_client
 from ui.theme import get_theme_qss
 from ui.icons import icon as get_icon
 from ui.views.scan_view import ScanView
@@ -40,8 +43,9 @@ class MainWindow(QMainWindow):
     # window via the OS, even though there's no native border to grab.
     _RESIZE_MARGIN = 6
 
-    def __init__(self):
+    def __init__(self, on_license_lost: Optional[Callable[[str], None]] = None):
         super().__init__()
+        self._on_license_lost = on_license_lost
         self.setWindowTitle("ClAIssify - Classify. Govern. Protect.")
         self.resize(1600, 900)
         self.setMinimumSize(1180, 720)
@@ -70,6 +74,7 @@ class MainWindow(QMainWindow):
         self._wire_signals()
         self._apply_initial_theme()
         self._check_first_run()
+        self._init_license_watchdog()
 
     def _init_ui(self) -> None:
         outer_widget = QWidget(self)
@@ -210,7 +215,7 @@ class MainWindow(QMainWindow):
 
         version_row = QHBoxLayout()
         version_row.setSpacing(4)
-        lbl_version = QLabel("v1.0.0", sidebar_footer)
+        lbl_version = QLabel("v1.1.0", sidebar_footer)
         lbl_version.setStyleSheet("font-size: 10px; color: #7C8AA0;")
         btn_about = QPushButton("Privacy && Help", sidebar_footer)
         btn_about.setFlat(True)
@@ -774,9 +779,72 @@ class MainWindow(QMainWindow):
         dlg = OnboardingDialog(self)
         dlg.exec()
 
+    def _init_license_watchdog(self) -> None:
+        """Periodic background license verification. If license is suspended,
+        revoked, or grace period expires while the window is open, stops ongoing
+        scans and triggers on_license_lost."""
+        if os.environ.get("CLAISSIFY_STANDALONE", "0") == "1":
+            return
+
+        self._license_timer = QTimer(self)
+        self._license_timer.setInterval(10000)  # check every 10 seconds for real-time revocation response
+        self._license_timer.timeout.connect(self._check_license_status)
+        self._license_timer.start()
+
+        # Trigger an initial check shortly after window is displayed
+        QTimer.singleShot(2000, self._check_license_status)
+
+    def _check_license_status(self) -> None:
+        """Runs a fast background refresh and evaluates current enforcement status."""
+        if not license_client.is_registered():
+            self._handle_license_lost("Not activated")
+            return
+
+        # 1. Quick local check first
+        allowed, reason = license_client.enforcement_status()
+        if not allowed:
+            self._handle_license_lost(reason)
+            return
+
+        # 2. Asynchronous live refresh so network latency does not block Qt UI
+        def _bg_refresh():
+            try:
+                allowed_live, reason_live = license_client.refresh_policy(timeout_seconds=3.0)
+                if not allowed_live:
+                    QTimer.singleShot(0, lambda r=reason_live: self._handle_license_lost(r))
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg_refresh, daemon=True, name="LicenseWatchdogThread").start()
+
+    def _handle_license_lost(self, reason: str) -> None:
+        """Handles license revocation or suspension while MainWindow is active."""
+        if hasattr(self, "_license_timer") and self._license_timer.isActive():
+            self._license_timer.stop()
+
+        # Cancel any ongoing scan immediately
+        if hasattr(self, "view_scan") and self.view_scan:
+            try:
+                self.view_scan._on_cancel_scan()
+            except Exception:
+                pass
+
+        if self._on_license_lost:
+            self._on_license_lost(reason)
+        else:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self,
+                "License Enforcement",
+                f"Access suspended: {reason}.\nPlease contact your administrator.",
+            )
+            self.close()
+
     def closeEvent(self, event) -> None:
         """Cleanly terminate any running UI workers upon application exit."""
         try:
+            if hasattr(self, "_license_timer") and self._license_timer.isActive():
+                self._license_timer.stop()
             if hasattr(self, "view_live") and self.view_live:
                 if hasattr(self.view_live, "poll_timer") and self.view_live.poll_timer:
                     self.view_live.poll_timer.stop()
