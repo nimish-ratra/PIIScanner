@@ -1,12 +1,12 @@
-# 🧠 Project Context & Developer/Agent Handbook: PIIScanner (ClAIssify, formerly "PII Sentinel")
+# 🧠 Project Context & Developer/Agent Handbook: clAIssify (formerly "PII Sentinel")
 
-> **Purpose:** This file acts as the single source of truth for AI agents and human developers working on **PIIScanner**, user-facing product name **ClAIssify** (rebranded cosmetically from "PII Sentinel" - see §12.13; internal paths, registry keys, and identifiers still reference the old name by design). It details the complete architecture, technical decisions, feature sets, build processes, known gotchas, and testing methodologies.
+> **Purpose:** This file acts as the single source of truth for AI agents and human developers working on **clAIssify** (formerly "PII Sentinel" - see §12.13; internal paths, registry keys, and identifiers still reference the old name by design). It details the complete architecture, technical decisions, feature sets, build processes, known gotchas, and testing methodologies.
 
 ---
 
 ## 1. Executive Summary & Core Philosophy
 
-- **Application Name:** PII Sentinel (Repository: `PIIScanner`)
+- **Application Name:** clAIssify (Repository: `clAIssify`)
 - **Target OS:** Windows 10 / Windows 11 (64-bit)
 - **Primary Function:** A desktop application that recursively audits folders and documents for Personally Identifiable Information (PII), previews findings with secure redactions, extracts files while preserving directory trees, and packages files into password-protected encrypted archives.
 - **Air-Gapped & Local-First:**
@@ -1047,7 +1047,7 @@ To allow installation on any target Windows 10/11 machine without pre-installed 
 - **Automatic JVM Discovery:** Apache Tika text extraction (`agent/backend/tika_extractor.py`) inspects `{sys.executable}/../jre/bin/java.exe` first, allowing seamless out-of-the-box operation on fresh client machines with zero configuration.
 - **Single-File Setup:** `agent/dist_installer/PIISentinel_Setup_v1.1.exe` (121.1 MB) delivers the complete payload (Python 3 runtime, PySide6, Presidio NLP models, spaCy, and OpenJDK).
 
-### 16.3 Unified Repository Architecture (`nimish-ratra/PIIScanner`)
+### 16.3 Unified Repository Architecture (`nimish-ratra/clAIssify`)
 All components across the entire platform are unified into the single personal repository:
 - **Desktop Agent:** Located in `agent/`.
 - **Licensing & Management Software:** Consolidated under `_external/licensing-software-/` containing:
@@ -1056,4 +1056,65 @@ All components across the entire platform are unified into the single personal r
   - `apps/trustfabric-admin`: Next.js vendor admin portal for issuing master licenses and monitoring tenants.
 - **Git Hygiene:** External upstream remotes (`kavyansh`) and nested `.git` submodules were removed, ensuring clean commits and pushes to `origin` (`git@github-personal:nimish-ratra/PIIScanner.git`).
 - **Comprehensive Changelog:** All architectural and code divergences from base licensing software are documented in `LICENSING_SOFTWARE_CHANGES.md`.
+
+---
+
+## 17. Phase 8: Microsoft 365 (O365) Cloud Connector & Centralized Data Protection
+
+### 17.1 Real-Time Cloud Protection Boundary: Detect-and-Remediate (Honest Caveat)
+- **The Core Architectural Distinction:**
+  - **Tier 1 Endpoint Protection (`agent/office_addin/`):** Operates natively inside desktop Word/Excel processes via VSTO/COM. It intercepts the synchronous `BeforeSave` event and can assert `Cancel = true` before sensitive file bytes commit to disk or local cache.
+  - **Cloud & Office Online Storage:** Office Online, direct web uploads to SharePoint, and OneDrive sync clients do not expose any public third-party pre-commit cancellation APIs. Only Microsoft's own internal Purview DLP kernel can intercept saves mid-flight in the cloud.
+  - **Architecture Principle:** The O365 Cloud Connector operates on a **detect-and-remediate** model (the exact same architectural shape as the Windows Filesystem Watcher in `agent/service/service_runner.py`), **never pre-save blocking**.
+  - **Honesty Rule:** No UI element, customer portal view, or documentation may claim, promise, or imply pre-save blocking for Office 365 / SharePoint / OneDrive cloud uploads.
+
+### 17.2 High-Leverage Synthetic Installation Architecture (§1.1)
+- **Centralized Service (`apps/cloud-connector`):** Runs centrally as a NestJS Turborepo app inside `_external/licensing-software-/apps/cloud-connector`, executed once per enterprise organization using that company's own Azure AD (Microsoft Entra) app registration.
+- **Synthetic Installation Row Reuse:**
+  - Instead of proliferating parallel schema tables (e.g. `SharePointScanRun`, `CloudFinding`), the connector provisions a single synthetic `Installation` record per company:
+    - `deviceId`: `"o365-connector-<companyId>"`
+    - `hostname`: `"cloud-connector"`
+    - `os`: `"cloud"`
+    - `applicationVersion`: `"1.1.0"`
+  - **Massive Leverage:** Every existing backend table (`ScanRun`, `ScanFindingSummary`, `EnforcementWindow`, `AgentCommand`), the outbox pattern, the Customer Portal's Installation Details view, fleet-wide rollup charts, and RBAC tenant scoping function immediately with **zero schema changes**.
+- **Extended Fields:**
+  - `ScanRun.scanSource`: Extended to support `"o365_sharepoint"`, `"o365_onedrive"`, and `"o365_exchange"`.
+  - `ScanRun.targetSummary`: Formatted as `"SharePoint: <Site Name>"` or `"OneDrive: <User Principal Name>"`.
+  - `ScanFindingSummary.pathRef`: Follows the identical company privacy firewall: salted cryptographic hash (`sha256:...`) by default, or literal Graph drive path if `company.syncFullPaths` is explicitly enabled.
+
+### 17.3 Azure AD / Microsoft Entra App Registration & Auth (§1.2)
+- **Client Credentials Flow:** Uses the official `@microsoft/microsoft-graph-client` and `@azure/msal-node` libraries for app-only authentication (client credentials grant).
+- **Required Application Scopes:**
+  - Read-only inspection: `Sites.Read.All`, `Files.Read.All`, `User.Read.All`.
+  - Write-back remediation & watermarking: `Sites.ReadWrite.All`, `Files.ReadWrite.All`.
+- **Tenant-Wide Admin Consent:** Customer Portal Settings provides an automated admin consent URL generator:
+  `https://login.microsoftonline.com/{tenantId}/adminconsent?client_id={clientId}` allowing the tenant's Global Administrator to grant tenant-wide consent with one click.
+- **Credential Security:** Client secrets are encrypted at rest using AES-256-GCM (`CloudConnectorConfig.clientSecretEncrypted`) before database persistence, ensuring raw credentials never reside in plaintext.
+
+### 17.4 Classification Pipeline Reuse (Headless Python Engine, §1.3)
+- **Zero TypeScript Reimplementation:** Rather than attempting to rewrite Presidio NER recognizers, custom Verhoeff Indian ID validators, or Apache Tika extraction in TypeScript, the connector reuses the existing Python classification engine.
+- **Two-Tier Invocation Strategy (Option B with Option A Fallback):**
+  1. **Primary (FastAPI HTTP Daemon, Option B):** `POST http://127.0.0.1:47821/classify/bytes` in `agent/service/api_server.py` accepts in-memory file buffers with MIME type, streaming extraction directly through Apache Tika and Presidio without disk I/O.
+  2. **Fallback (CLI Subprocess, Option A):** If the background daemon is offline, `agent/backend/classifier_cli.py` is invoked headless via `python -m backend.classifier_cli --json-stdin`, providing an unkillable fallback.
+
+### 17.5 Near-Real-Time Delta Synchronization (§1.4)
+- **Zero-Exposure Delta Polling:** Graph change-notification webhooks require exposing public HTTPS ingress endpoints, violating the project's zero-cloud-exposure discipline. Instead, the connector queries Microsoft Graph `/delta` endpoints on a configurable interval (1–5 minutes).
+- **Cursor Persistence (`CloudConnectorSyncState`):** Persists the `@odata.deltaLink` token per drive/site in the database, ensuring subsequent sync runs only process items modified since the last check.
+
+### 17.6 Cloud Quarantine & Version-Preserving Watermarking (§1.5 & §1.6)
+- **Cloud Quarantine:**
+  - SharePoint items cannot be zipped-and-deleted due to co-authoring and metadata constraints.
+  - The connector strips public and external sharing links (`DELETE /drives/{driveId}/items/{itemId}/permissions/{permId}`), moves the item into a restricted `clAIssify-Quarantine` folder (`PATCH /drives/{driveId}/items/{itemId}`), and logs the event into `EnforcementWindow` with `source: "o365_watcher"`.
+- **Format-Aware Watermarking:**
+  - Reuses format-aware strategies from `agent/backend/watermark_engine.py` for `.docx`, `.xlsx`, `.pptx`, and `.pdf`.
+  - Uploaded back to Graph via `PUT /drives/{driveId}/items/{itemId}/content`, automatically creating a new version while preserving complete version history.
+  - Plaintext formats (`.txt`, `.csv`) are tagged via SharePoint custom listItem columns rather than NTFS alternate data streams.
+  - Both quarantine and watermarking respect `dryRunMode: true` by default.
+
+### 17.7 Surface in Customer Portal & Cross-References (§2)
+- **Installations View:** Distinct `Cloud` icon and `Cloud (O365)` badge displayed when `os === "cloud"`.
+- **Installation Protection Tab:** Automatically labels scan sources as `SharePoint (Cloud)` and `OneDrive (Cloud)`.
+- **Organization Settings:** Dedicated `Office 365 & SharePoint Cloud Connector` management card for tenant registration, admin consent validation, polling configuration, dry-run toggles, and manual sync triggers.
+- **Backend Reference:** Full implementation code is housed in `_external/licensing-software-/apps/cloud-connector/`, with shared schema models in `apps/api/prisma/schema.prisma`.
+
 

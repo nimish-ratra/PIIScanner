@@ -18,6 +18,7 @@ import {
 import { useAuth } from '@/components/providers/auth-provider';
 import { apiClient, ApiError } from '@/lib/api-client';
 import { ShieldAlert, ShieldCheck, KeyRound, Check } from 'lucide-react';
+import { O365ConnectorSettings } from './o365-connector-settings';
 
 interface SettingsPageProps {
   searchParams?: Promise<{ reason?: string }>;
@@ -360,6 +361,10 @@ function FleetReportingSettings({
           </div>
         </CardContent>
       </Card>
+
+      {activeCompanyId && (
+        <O365ConnectorSettings activeCompanyId={activeCompanyId} />
+      )}
 
       {/* Confirmation Dialog for Enabling Literal Paths */}
       <Dialog open={showConfirmModal} onOpenChange={(open) => !open && setShowConfirmModal(false)}>

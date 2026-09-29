@@ -1,6 +1,6 @@
 # ClAIssify Fleet Telemetry & Admin Panel — Handoff Document
 
-**Target Component:** ClAIssify Windows Desktop DLP Agent (`PIIScanner`)  
+**Target Component:** clAIssify Windows Desktop DLP Agent (`clAIssify`)  
 **Branch:** `feature/fleet-telemetry`  
 **Paired Backend Repo:** `licensing-software-` (branch: `feature/dspm-telemetry`)  
 **Date:** September 2026  
@@ -111,7 +111,7 @@ This branch implements outbound, privacy-preserving DSPM/DLP fleet telemetry rep
 
 ---
 
-## 5. Modified & Created Files in `PIIScanner`
+## 5. Modified & Created Files in `clAIssify`
 
 ```
 agent/

@@ -31,6 +31,7 @@ import {
 } from '@/components/ui/select';
 import {
   Monitor,
+  Cloud,
   ChevronRight,
   RotateCw,
   Search,
@@ -256,9 +257,20 @@ export default function FleetTelemetryPage() {
                     </TableCell>
                     <TableCell className="font-medium text-zinc-900">
                       <div className="flex items-center gap-2">
-                        <Monitor className="h-4 w-4 text-zinc-400 shrink-0" />
+                        {row.hostname === 'cloud-connector' || row.id?.includes('o365-connector') ? (
+                          <Cloud className="h-4 w-4 text-sky-500 shrink-0" />
+                        ) : (
+                          <Monitor className="h-4 w-4 text-zinc-400 shrink-0" />
+                        )}
                         <div>
-                          <div>{row.hostname || <span className="italic text-zinc-400">Unnamed device</span>}</div>
+                          <div>
+                            {row.hostname || <span className="italic text-zinc-400">Unnamed device</span>}
+                            {(row.hostname === 'cloud-connector' || row.id?.includes('o365-connector')) && (
+                              <Badge variant="outline" className="ml-2 text-[10px] border-sky-300 text-sky-700 bg-sky-50 py-0 px-1 font-normal">
+                                O365 Cloud
+                              </Badge>
+                            )}
+                          </div>
                           {(row.employeeName || row.employeeEmail) && (
                             <div className="text-[11px] text-zinc-400 font-normal">
                               {row.employeeName} {row.employeeEmail ? `(${row.employeeEmail})` : ''}

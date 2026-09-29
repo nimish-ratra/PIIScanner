@@ -74,6 +74,23 @@ const TIER_BADGE_CLASSES: Record<string, string> = {
   Public: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
 };
 
+const formatScanSource = (source?: string) => {
+  switch (source) {
+    case 'o365_sharepoint':
+      return 'SharePoint (Cloud)';
+    case 'o365_onedrive':
+      return 'OneDrive (Cloud)';
+    case 'o365_exchange':
+      return 'Exchange (Cloud)';
+    case 'full_system_scan':
+      return 'Full System';
+    case 'directory_scan':
+      return 'Directory';
+    default:
+      return source || 'Directory';
+  }
+};
+
 export function InstallationProtectionTab({ installationId, canManage }: InstallationProtectionTabProps) {
   const [data, setData] = useState<InstallationTelemetryData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -415,7 +432,7 @@ export function InstallationProtectionTab({ installationId, canManage }: Install
                 {scans.map((scan) => (
                   <TableRow key={scan.id} className="text-xs hover:bg-zinc-50/60">
                     <TableCell className="font-medium">
-                      {scan.scanSource === 'full_system_scan' ? 'Full System' : 'Directory'}
+                      {formatScanSource(scan.scanSource)}
                     </TableCell>
                     <TableCell className="text-zinc-600 truncate max-w-[160px]">
                       {scan.targetSummary || 'Default'}

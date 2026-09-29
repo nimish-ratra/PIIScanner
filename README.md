@@ -1,4 +1,4 @@
-# 🛡️ PIIScanner (PII Sentinel)
+# 🛡️ clAIssify
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6 / Qt](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt6-41CD52?style=flat-square&logo=qt&logoColor=white)](https://wiki.qt.io/Qt_for_Python)
@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![Privacy First](https://img.shields.io/badge/Privacy-100%25%20Local%20%26%20Airgapped-success?style=flat-square)](#-privacy--security-guarantee)
 
-**PIIScanner (PII Sentinel)** is an enterprise-grade, local-first Windows desktop application that recursively audits directories and documents to detect, mask, extract, and quarantine **Personally Identifiable Information (PII)**.
+**clAIssify** is an enterprise-grade, local-first Windows desktop application that recursively audits directories and documents to detect, mask, extract, and quarantine **Personally Identifiable Information (PII)**.
 
 Engineered with **Apache Tika** for universal document ingestion and **Microsoft Presidio** for advanced NER and rule-based PII identification, it features a fluid, modern **PySide6 (Qt for Python)** user interface with real-time analytics.
 
@@ -61,7 +61,7 @@ Engineered with **Apache Tika** for universal document ingestion and **Microsoft
 ## 🏛️ System Architecture
 
 ```
-PIIScanner/
+clAIssify/
 ├── backend/                  # Core classification, detection, and database engine
 │   ├── classifier.py         # Microsoft Purview 5-tier sensitivity engine
 │   ├── config.py             # User preferences manager (%APPDATA%\PIISentinel\config.json)
@@ -129,8 +129,8 @@ PIIScanner/
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/nimish-ratra/PIIScanner.git
-   cd PIIScanner
+   git clone https://github.com/nimish-ratra/clAIssify.git
+   cd clAIssify
    ```
 
 2. **Create and activate a virtual environment (recommended):**

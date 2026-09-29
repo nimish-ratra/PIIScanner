@@ -2,7 +2,7 @@
 
 **Target Component:** TrustFabric Monorepo (`licensing-software-`)  
 **Branch:** `feature/dspm-telemetry`  
-**Paired Agent Repo:** `PIIScanner` (branch: `feature/fleet-telemetry`)  
+**Paired Agent Repo:** `clAIssify` (branch: `feature/fleet-telemetry`)  
 **Date:** September 2026  
 **Status:** Complete, Verified & Tested End-to-End  
 

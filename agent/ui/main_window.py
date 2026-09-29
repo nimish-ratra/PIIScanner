@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         brand_text_col.setSpacing(0)
         lbl_brand = QLabel(sidebar)
         lbl_brand.setTextFormat(Qt.RichText)
-        lbl_brand.setText('Cl<span style="color:#1677FF;">AI</span>ssify')
+        lbl_brand.setText('cl<span style="color:#1677FF;">AI</span>ssify')
         lbl_brand.setObjectName("sidebarTitle")
         lbl_brand.setStyleSheet("padding: 0;")
         lbl_brand_sub = QLabel(sidebar)

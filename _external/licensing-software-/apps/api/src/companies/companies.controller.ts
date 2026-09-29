@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, Patch, Request, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Request, UsePipes, ValidationPipe } from '@nestjs/common';
 import { CompaniesService } from './companies.service.js';
 import { RequirePermissions } from '../auth/permissions.decorator.js';
 import { UpdateTelemetrySettingsDto } from '../agent-telemetry/agent-telemetry.dto.js';
+import { UpdateCloudConnectorConfigDto } from './cloud-connector.dto.js';
 
 @Controller('customer/companies')
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
@@ -44,5 +45,37 @@ export class CompaniesController {
       req.user.id,
     );
   }
+
+  @Get(':id/o365-connector')
+  @RequirePermissions('company.read')
+  async getCloudConnectorConfig(@Param('id') id: string, @Request() req: any) {
+    return this.companiesService.getCloudConnectorConfig(id, req.user.allowedCompanyIds);
+  }
+
+  @Put(':id/o365-connector')
+  @RequirePermissions('company.manage')
+  async updateCloudConnectorConfig(
+    @Param('id') id: string,
+    @Body() dto: UpdateCloudConnectorConfigDto,
+    @Request() req: any,
+  ) {
+    return this.companiesService.updateCloudConnectorConfig(
+      id,
+      dto,
+      req.user.allowedCompanyIds,
+      req.user.id,
+    );
+  }
+
+  @Post(':id/o365-connector/sync')
+  @RequirePermissions('company.manage')
+  async triggerCloudConnectorSync(@Param('id') id: string, @Request() req: any) {
+    return this.companiesService.triggerCloudConnectorSync(
+      id,
+      req.user.allowedCompanyIds,
+      req.user.id,
+    );
+  }
 }
+
 

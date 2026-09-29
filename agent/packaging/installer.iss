@@ -1,10 +1,10 @@
 ; Inno Setup Script for PII Sentinel
 ; Produces a single standalone Windows Setup installer (.exe)
 
-#define MyAppName "PII Sentinel"
+#define MyAppName "clAIssify"
 #define MyAppVersion "1.1.0"
-#define MyAppPublisher "Sentinel Security"
-#define MyAppExeName "PIISentinel.exe"
+#define MyAppPublisher "clAIssify"
+#define MyAppExeName "clAIssify.exe"
 
 [Setup]
 AppId={{C8E79F32-441A-4D41-949B-5EE110825B8B}
@@ -15,7 +15,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\dist_installer
-OutputBaseFilename=PIISentinel_Setup_v1.1
+OutputBaseFilename=clAIssify_Setup_v1.1
 SetupIconFile=assets\app_icon.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -31,7 +31,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\dist\PIISentinel\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\clAIssify\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -73,7 +73,7 @@ begin
     if not CheckForJava() then
     begin
       MsgBox('Notice: Apache Tika requires a Java Runtime (Java 8+ or Eclipse Adoptium) to extract text from documents.' + #13#10 +
-             'If Java is not installed, PII Sentinel can still inspect text/json files, but installing Eclipse Adoptium Temurin is recommended for PDF and Office documents.',
+             'If Java is not installed, clAIssify can still inspect text/json files, but installing Eclipse Adoptium Temurin is recommended for PDF and Office documents.',
              mbInformation, MB_OK);
     end;
   end;

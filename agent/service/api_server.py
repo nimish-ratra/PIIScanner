@@ -78,6 +78,12 @@ class FileClassificationRequest(BaseModel):
     source_hint: str = Field(default="Watcher", description="Caller identifier")
 
 
+class BytesClassificationRequest(BaseModel):
+    filename: str = Field(default="document.bin", description="Original filename with extension for Tika MIME detection")
+    content_base64: str = Field(..., description="Base64-encoded raw file bytes")
+    source_hint: str = Field(default="O365-Connector", description="Caller identifier")
+
+
 class FileClassificationResponse(BaseModel):
     tier: str
     level: int
@@ -347,6 +353,93 @@ def classify_file(req: FileClassificationRequest):
         total_findings=len(findings_list),
         file_path=str(file_path)
     )
+
+
+@app.post("/classify/bytes", response_model=FileClassificationResponse)
+def classify_bytes(req: BytesClassificationRequest):
+    """
+    Classify binary content stream in memory/tempfile (used by O365 Cloud Connector).
+    Accepts Base64 encoded payload, writes to temp file with original extension for Tika parsing.
+    """
+    import base64
+    import tempfile
+
+    try:
+        raw_bytes = base64.b64decode(req.content_base64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 payload: {e}")
+
+    suffix = Path(req.filename).suffix or ".bin"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(raw_bytes)
+        tmp_path = tmp.name
+
+    try:
+        extractor = TikaExtractor()
+        extracted_text, _ = extractor.extract_text(tmp_path)
+
+        if not extracted_text or not extracted_text.strip():
+            # Fallback for plaintext
+            try:
+                extracted_text = raw_bytes.decode("utf-8", errors="ignore")
+            except Exception:
+                extracted_text = ""
+
+        if not extracted_text or not extracted_text.strip():
+            return FileClassificationResponse(
+                tier=SensitivityTier.GENERAL.value,
+                level=2,
+                badge="⚪ General",
+                findings=[],
+                recommended_action=EnforcementAction.ALLOW.value,
+                rationale="No parseable text extracted from payload.",
+                total_findings=0,
+                file_path=req.filename
+            )
+
+        detector = PresidioDetector.get_instance()
+        raw_findings = detector.analyze_text(extracted_text, score_threshold=0.40)
+
+        # Filter findings to real-time configured entity types
+        allowed_types = set(config_manager.realtime_selected_entities)
+        filtered_findings = [f for f in raw_findings if f.get("entity") in allowed_types]
+
+        classification = classify_document(filtered_findings)
+        tier = classification["tier"]
+        level = classification["level"]
+        badge = classification["badge"]
+        rationale = classification["rationale"]
+
+        recommended_action = policy_manager.get_action_for_tier(tier, is_office=False)
+
+        findings_list: List[FindingItem] = []
+        entity_counts: Dict[str, int] = {}
+        for f in filtered_findings:
+            ent = f.get("entity", "PII")
+            entity_counts[ent] = entity_counts.get(ent, 0) + 1
+            findings_list.append(FindingItem(
+                entity_type=ent,
+                redacted_value=f.get("value_redacted", redact_value(f.get("value", ""))),
+                confidence=float(f.get("confidence", 0.0)),
+                start=int(f.get("start", 0)),
+                end=int(f.get("end", 0))
+            ))
+
+        return FileClassificationResponse(
+            tier=tier,
+            level=level,
+            badge=badge,
+            findings=findings_list,
+            recommended_action=recommended_action,
+            rationale=rationale,
+            total_findings=len(findings_list),
+            file_path=req.filename
+        )
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
 
 @app.post("/enforcement/log")

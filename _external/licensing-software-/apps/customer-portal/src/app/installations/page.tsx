@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Monitor, ChevronRight, RotateCw } from 'lucide-react';
+import { Monitor, Cloud, ChevronRight, RotateCw } from 'lucide-react';
 import { INSTALLATION_STATUS_CONFIG } from './installation-status';
 import { InstallationDetailsDialog } from './installation-details-dialog';
 
@@ -161,11 +161,23 @@ export default function InstallationsPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="font-medium flex items-center gap-2">
-                      <Monitor className="h-4 w-4 text-slate-400" />
-                      {inst.hostname || <span className="text-slate-400 italic">Unnamed</span>}
+                      {inst.os === 'cloud' || inst.deviceId?.startsWith('o365-connector') ? (
+                        <Cloud className="h-4 w-4 text-sky-500 shrink-0" />
+                      ) : (
+                        <Monitor className="h-4 w-4 text-slate-400 shrink-0" />
+                      )}
+                      <span>{inst.hostname || <span className="text-slate-400 italic">Unnamed</span>}</span>
                     </TableCell>
                     <TableCell>{inst.company?.name ?? inst.companyId}</TableCell>
-                    <TableCell>{[inst.os, inst.osVersion].filter(Boolean).join(' ') || '—'}</TableCell>
+                    <TableCell>
+                      {inst.os === 'cloud' || inst.deviceId?.startsWith('o365-connector') ? (
+                        <Badge variant="outline" className="border-sky-300 text-sky-700 bg-sky-50 font-normal">
+                          Cloud (O365)
+                        </Badge>
+                      ) : (
+                        [inst.os, inst.osVersion].filter(Boolean).join(' ') || '—'
+                      )}
+                    </TableCell>
                     <TableCell>{inst.agentVersion || '—'}</TableCell>
                     <TableCell className="text-slate-500">
                       {inst.lastHeartbeatAt ? new Date(inst.lastHeartbeatAt).toLocaleString() : '—'}

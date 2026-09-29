@@ -1,5 +1,5 @@
 """
-Automated Build Script for PII Sentinel
+Automated Build Script for clAIssify
 1. Builds standalone distribution using PyInstaller
 2. Detects Inno Setup Compiler (ISCC.exe) and compiles single-file Windows installer
 """
@@ -39,8 +39,11 @@ def find_iscc() -> Path | None:
 
 
 def run_pyinstaller() -> bool:
-    """Run PyInstaller with pii_sentinel.spec."""
-    spec_file = PACKAGING_DIR / "pii_sentinel.spec"
+    """Run PyInstaller with clAIssify.spec or pii_sentinel.spec."""
+    spec_file = PACKAGING_DIR / "clAIssify.spec"
+    if not spec_file.exists():
+        spec_file = PACKAGING_DIR / "pii_sentinel.spec"
+
     print("=" * 60)
     print("STEP 1: Building Standalone Executable via PyInstaller...")
     print(f"Spec File: {spec_file}")
@@ -66,7 +69,10 @@ def run_pyinstaller() -> bool:
         print("[ERROR] PyInstaller compilation failed.")
         return False
 
-    output_exe = DIST_DIR / "PIISentinel" / "PIISentinel.exe"
+    output_exe = DIST_DIR / "clAIssify" / "clAIssify.exe"
+    if not output_exe.exists():
+        output_exe = DIST_DIR / "PIISentinel" / "PIISentinel.exe"
+
     if output_exe.exists():
         print(f"[SUCCESS] Standalone executable created at:\n  {output_exe}")
         return True
@@ -99,7 +105,9 @@ def run_inno_setup() -> bool:
     result = subprocess.run(cmd, cwd=str(PACKAGING_DIR))
 
     if result.returncode == 0:
-        installer_file = INSTALLER_OUTPUT_DIR / "PIISentinel_Setup_v1.0.exe"
+        installer_file = INSTALLER_OUTPUT_DIR / "clAIssify_Setup_v1.1.exe"
+        if not installer_file.exists():
+            installer_file = INSTALLER_OUTPUT_DIR / "PIISentinel_Setup_v1.0.exe"
         if installer_file.exists():
             print("=" * 60)
             print(f"[SUCCESS] Installer created successfully!")
@@ -107,9 +115,13 @@ def run_inno_setup() -> bool:
             print(f"Size: {installer_file.stat().st_size / (1024 * 1024):.1f} MB")
             print("=" * 60)
             return True
+
+
 def ensure_bundled_jre() -> bool:
     """Ensure minimal JRE is bundled into the distribution directory for Apache Tika."""
-    dist_jre = DIST_DIR / "PIISentinel" / "jre"
+    dist_jre = DIST_DIR / "clAIssify" / "jre"
+    if not dist_jre.parent.exists() and (DIST_DIR / "PIISentinel").exists():
+        dist_jre = DIST_DIR / "PIISentinel" / "jre"
     packaging_jre = PACKAGING_DIR / "jre"
 
     if (dist_jre / "bin" / "java.exe").exists():

@@ -60,6 +60,8 @@ model Company {
   scanRuns                     ScanRun[]
   enforcementWindows           EnforcementWindow[]
   agentCommands                AgentCommand[]
+  cloudConnectorConfig         CloudConnectorConfig?
+  cloudConnectorSyncStates     CloudConnectorSyncState[]
 
   @@index([enterpriseId])
 }
@@ -633,4 +635,49 @@ model AgentCommand {
 
   @@index([installationId, status])
   @@index([companyId, status])
+}
+
+// ─── Office 365 Cloud Connector Models ────────────────────────────────────────
+
+// Per-company Azure AD application registration and connector configuration.
+model CloudConnectorConfig {
+  id                    String    @id @default(uuid())
+  companyId             String    @unique
+  tenantId              String
+  clientId              String
+  clientSecretEncrypted String?   // Encrypted at rest (AES-256-GCM)
+  certificateThumbprint String?   // Alternative to client secret
+  adminConsentGranted   Boolean   @default(false)
+  enabled               Boolean   @default(true)
+  pollIntervalMinutes   Int       @default(5)
+  dryRunMode            Boolean   @default(true) // Dry run mode for quarantine and watermarking (§1.5, §1.6)
+  quarantineLibraryName String    @default("clAIssify-Quarantine")
+  lastSyncAt            DateTime?
+  status                String    @default("PENDING_CONSENT") // PENDING_CONSENT, CONFIGURED, SYNCING, ERROR
+  statusMessage         String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+// Company-scoped delta cursor state per SharePoint site or OneDrive user drive.
+model CloudConnectorSyncState {
+  id           String    @id @default(uuid())
+  companyId    String
+  resourceType String    // "sharepoint_site" | "onedrive_user"
+  resourceId   String    // Graph site-id or drive-id
+  resourceName String    // Site title or userPrincipalName
+  deltaLink    String?   @db.Text
+  lastSyncAt   DateTime  @default(now())
+  itemCount    Int       @default(0)
+  status       String    @default("IDLE") // IDLE, SYNCING, ERROR
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, resourceType, resourceId])
+  @@index([companyId])
 }

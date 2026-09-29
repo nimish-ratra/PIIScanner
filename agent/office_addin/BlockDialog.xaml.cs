@@ -104,7 +104,11 @@ namespace PIISentinel.OfficeAddin
         {
             try
             {
-                string exePath = @"c:\PIISentinalApp\dist\PIISentinel\PIISentinel.exe";
+                string exePath = @"c:\PIISentinalApp\dist\clAIssify\clAIssify.exe";
+                if (!File.Exists(exePath))
+                {
+                    exePath = @"c:\PIISentinalApp\dist\PIISentinel\PIISentinel.exe";
+                }
                 if (File.Exists(exePath))
                 {
                     Process.Start(new ProcessStartInfo(exePath) { UseShellExecute = true });
@@ -117,7 +121,7 @@ namespace PIISentinel.OfficeAddin
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Could not launch PII Sentinel: " + ex.Message, "PII Sentinel", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Could not launch clAIssify: " + ex.Message, "clAIssify", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
     }

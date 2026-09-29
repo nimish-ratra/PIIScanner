@@ -26,5 +26,9 @@
   "overrides": {
     "multer": "^2.3.0",
     "deepmerge-ts": "^8.0.2"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^7.0.0",
+    "@microsoft/microsoft-graph-client": "^3.0.7"
   }
 }

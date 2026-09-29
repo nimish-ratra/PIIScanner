@@ -77,8 +77,8 @@ def main():
 
     # Qt Application Setup
     app = QApplication(sys.argv)
-    app.setApplicationName("ClAIssify")
-    app.setOrganizationName("Sentinel Security")
+    app.setApplicationName("clAIssify")
+    app.setOrganizationName("clAIssify")
     app.setApplicationVersion("1.1.0")
 
     # Holds whichever top-level window is currently active so Qt doesn't

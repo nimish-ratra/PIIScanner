@@ -151,8 +151,8 @@ export class ScanSummaryDto {
   @IsUUID()
   clientScanId!: string;
 
-  @IsIn(['directory_scan', 'full_system_scan'])
-  scanSource!: 'directory_scan' | 'full_system_scan';
+  @IsIn(['directory_scan', 'full_system_scan', 'o365_sharepoint', 'o365_onedrive', 'o365_exchange'])
+  scanSource!: 'directory_scan' | 'full_system_scan' | 'o365_sharepoint' | 'o365_onedrive' | 'o365_exchange';
 
   @IsOptional()
   @IsString()
